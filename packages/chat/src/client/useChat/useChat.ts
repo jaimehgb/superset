@@ -14,6 +14,7 @@ import { type FileUIPart, isToolUIPart, type UIMessage } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChunkRow } from "../../schema";
 import { messageRowToUIMessage } from "../../session-db/collections/messages/materialize";
+import type { AssistantMessageMetadata } from "../../session-db/types";
 import {
 	type UseChatMetadataReturn,
 	useChatMetadata,
@@ -55,7 +56,11 @@ export type AddToolOutputOptions =
 
 export interface UseChatReturn {
 	ready: boolean;
-	messages: (UIMessage & { actorId: string; createdAt: Date })[];
+	messages: (UIMessage & {
+		actorId: string;
+		createdAt: Date;
+		metadata?: AssistantMessageMetadata;
+	})[];
 	isLoading: boolean;
 	sendMessage: (
 		text: string,

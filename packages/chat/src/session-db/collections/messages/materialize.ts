@@ -13,6 +13,7 @@ import type { UIMessage, UIMessageChunk } from "ai";
 import type { ChunkRow } from "../../../schema";
 import type {
 	AnyUIMessagePart,
+	AssistantMessageMetadata,
 	DurableStreamChunk,
 	MessageRole,
 	MessageRow,
@@ -99,6 +100,7 @@ function materializeStreamedMessage(rows: ChunkRow[]): MessageRow {
 	const toolInputText = new Map<string, string>();
 
 	let isComplete = false;
+	let metadata: AssistantMessageMetadata | undefined;
 	let currentTextId: string | null = null;
 	let currentReasoningId: string | null = null;
 
@@ -345,10 +347,27 @@ function materializeStreamedMessage(rows: ChunkRow[]): MessageRow {
 
 			// --- Stream lifecycle ---
 			case "start":
-				// No-op — metadata only
+				if (
+					(c as { messageMetadata?: AssistantMessageMetadata }).messageMetadata
+				) {
+					metadata = {
+						...metadata,
+						...(c as { messageMetadata: AssistantMessageMetadata })
+							.messageMetadata,
+					};
+				}
 				break;
 			case "finish":
 				isComplete = true;
+				if (
+					(c as { messageMetadata?: AssistantMessageMetadata }).messageMetadata
+				) {
+					metadata = {
+						...metadata,
+						...(c as { messageMetadata: AssistantMessageMetadata })
+							.messageMetadata,
+					};
+				}
 				break;
 			case "abort":
 				isComplete = true;
@@ -360,7 +379,15 @@ function materializeStreamedMessage(rows: ChunkRow[]): MessageRow {
 				} as unknown as AnyUIMessagePart);
 				break;
 			case "message-metadata":
-				// No-op
+				if (
+					(c as { messageMetadata?: AssistantMessageMetadata }).messageMetadata
+				) {
+					metadata = {
+						...metadata,
+						...(c as { messageMetadata: AssistantMessageMetadata })
+							.messageMetadata,
+					};
+				}
 				break;
 
 			default:
@@ -378,6 +405,7 @@ function materializeStreamedMessage(rows: ChunkRow[]): MessageRow {
 		isComplete,
 		createdAt: new Date(first.createdAt),
 		lastChunkAt: new Date(lastRow.createdAt),
+		metadata,
 	};
 }
 
@@ -444,14 +472,21 @@ export function isAssistantMessage(row: MessageRow): boolean {
 /**
  * Convert a MessageRow to an AI SDK UIMessage.
  */
-export function messageRowToUIMessage(
-	row: MessageRow,
-): UIMessage & { actorId: string; createdAt: Date } {
+export function messageRowToUIMessage(row: MessageRow): UIMessage & {
+	actorId: string;
+	createdAt: Date;
+	metadata?: AssistantMessageMetadata;
+} {
 	return {
 		id: row.id,
 		role: row.role as "user" | "assistant",
 		parts: row.parts,
 		createdAt: row.createdAt,
 		actorId: row.actorId,
-	} as UIMessage & { actorId: string; createdAt: Date };
+		metadata: row.metadata,
+	} as UIMessage & {
+		actorId: string;
+		createdAt: Date;
+		metadata?: AssistantMessageMetadata;
+	};
 }
