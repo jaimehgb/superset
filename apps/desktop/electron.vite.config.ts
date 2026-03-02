@@ -109,6 +109,8 @@ export default defineConfig({
 					"pg-native",
 					"@ast-grep/napi",
 					"libsql",
+					"ssh2",
+					"cpu-features",
 				],
 				plugins: [sentryPlugin].filter(Boolean),
 			},

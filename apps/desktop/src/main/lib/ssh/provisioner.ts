@@ -1,6 +1,6 @@
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SUPERSET_DIR_NAME } from "shared/constants";
 import type { SFTPWrapper } from "ssh2";
 import type { SshConnectionManager } from "./connection-manager";
@@ -11,19 +11,36 @@ import {
 } from "./types";
 
 /**
- * Local directory containing the pre-built remote daemon bundle.
+ * Locate the pre-built remote daemon bundle directory.
  * Produced by `scripts/package-remote-daemon.ts`.
- * Must match REMOTE_DAEMON_OUTPUT_DIR in that script.
+ *
+ * After Vite bundles the main process, __dirname might point to `dist/main/`
+ * or `dist/main/chunks/` depending on code splitting. We check multiple
+ * candidate paths and pick the first one that exists.
  */
-const DAEMON_BUNDLE_DIR = join(
-	__dirname,
-	"..",
-	"..",
-	"..",
-	"..",
-	"dist",
-	"remote-daemon",
-);
+function findDaemonBundleDir(): string {
+	const candidates = [
+		join(__dirname, "..", "remote-daemon"), // dist/main/ → dist/remote-daemon/
+		join(__dirname, "..", "..", "remote-daemon"), // dist/main/chunks/ → dist/remote-daemon/
+		join(__dirname, "remote-daemon"), // if __dirname IS dist/
+	];
+
+	for (const candidate of candidates) {
+		if (existsSync(join(candidate, "terminal-host.js"))) {
+			return candidate;
+		}
+	}
+
+	// Fallback: log all attempted paths for debugging
+	console.error(
+		"[provisioner] Cannot find daemon bundle. Tried:",
+		candidates,
+	);
+	console.error("[provisioner] __dirname =", __dirname);
+	return candidates[0]!;
+}
+
+const DAEMON_BUNDLE_DIR = findDaemonBundleDir();
 
 /** Bump when the set of provisioned files changes. */
 const PROVISION_VERSION = "1";
@@ -186,30 +203,51 @@ export class RemoteProvisioner {
 	 * native addons for the remote machine's architecture.
 	 */
 	async provisionDaemon(): Promise<void> {
+		console.log("[provisioner] DAEMON_BUNDLE_DIR =", DAEMON_BUNDLE_DIR);
+
+		// Verify local bundle exists
+		const filesToUpload = [
+			"terminal-host.js",
+			"pty-subprocess.js",
+			"package.json",
+		];
+		for (const file of filesToUpload) {
+			const localPath = join(DAEMON_BUNDLE_DIR, file);
+			if (!existsSync(localPath)) {
+				throw new Error(
+					`Daemon bundle file not found: ${localPath}. ` +
+						"Run 'bun run apps/desktop/scripts/package-remote-daemon.ts' first.",
+				);
+			}
+		}
+
+		// Resolve the remote home directory (SFTP doesn't expand ~)
+		const homeResult = await this.ssh.exec("echo $HOME");
+		const remoteHome = homeResult.stdout.trim();
+		const remoteBase = `${remoteHome}/${REMOTE_SUPERSET_DIR}`;
+		console.log("[provisioner] Remote base:", remoteBase);
+
 		const sftp = await this.ssh.getSftpClient();
-		const remoteBase = `~/${REMOTE_SUPERSET_DIR}`;
 
 		try {
 			// Ensure remote directory exists
 			await this.ssh.exec(`mkdir -p ${remoteBase}`);
 
 			// Upload daemon bundle files
-			const filesToUpload = [
-				"terminal-host.js",
-				"pty-subprocess.js",
-				"package.json",
-			];
-
 			for (const file of filesToUpload) {
-				await this.uploadFile(
-					sftp,
-					join(DAEMON_BUNDLE_DIR, file),
-					`${remoteBase}/${file}`,
-				);
+				const localPath = join(DAEMON_BUNDLE_DIR, file);
+				const remotePath = `${remoteBase}/${file}`;
+				console.log(`[provisioner] Uploading ${file}...`);
+				await this.uploadFile(sftp, localPath, remotePath);
 			}
+			console.log("[provisioner] All files uploaded");
 
 			// Install native dependencies on the remote machine
-			await this.ssh.exec(`cd ${remoteBase} && npm install --production 2>&1`);
+			console.log("[provisioner] Running npm install on remote...");
+			const npmResult = await this.ssh.exec(
+				`cd ${remoteBase} && npm install --production 2>&1`,
+			);
+			console.log("[provisioner] npm install:", npmResult.stdout.trim().split("\n").pop());
 		} finally {
 			sftp.end();
 		}

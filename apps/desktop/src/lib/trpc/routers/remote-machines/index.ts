@@ -216,12 +216,18 @@ export const createRemoteMachinesRouter = () => {
 				const ssh = new SshConnectionManager(toSshConfig(machine));
 
 				try {
+					console.log(
+						`[remote] Testing connection to ${machine.host}:${machine.port}...`,
+					);
 					await ssh.connect();
+					console.log("[remote] Test SSH connected");
 					const provisioner = new RemoteProvisioner(ssh);
 					const nodeVersion = await provisioner.checkNodeAvailable();
+					console.log(`[remote] Test complete — Node ${nodeVersion}`);
 					return { success: true, nodeVersion };
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
+					console.error(`[remote] Test connection failed: ${message}`);
 					return { success: false, error: message };
 				} finally {
 					await ssh.disconnect();
@@ -253,6 +259,7 @@ export const createRemoteMachinesRouter = () => {
 				// If already connected, return early
 				const existingConn = activeConnections.get(input.id);
 				if (existingConn?.getState() === "connected") {
+					console.log(`[remote] Already connected to ${machine.name}`);
 					return { success: true, alreadyConnected: true };
 				}
 
@@ -267,28 +274,56 @@ export const createRemoteMachinesRouter = () => {
 
 				try {
 					// Step 1: SSH connect
+					console.log(
+						`[remote] Connecting to ${machine.host}:${machine.port}...`,
+					);
 					await ssh.connect();
+					console.log("[remote] SSH connected");
 
 					// Step 2: Provision
 					const provisioner = new RemoteProvisioner(ssh);
-					await provisioner.checkNodeAvailable();
+					console.log("[remote] Checking Node.js availability...");
+					const nodeVersion = await provisioner.checkNodeAvailable();
+					console.log(`[remote] Node.js ${nodeVersion}`);
+
 					if (await provisioner.needsProvisioning()) {
+						console.log("[remote] Provisioning remote machine...");
 						await provisioner.provision();
+						console.log("[remote] Provisioning complete");
 					}
 
-					// Step 3: Ensure daemon running
-					await provisioner.ensureDaemonRunning();
+					// Step 3: Upload daemon bundle
+					console.log("[remote] Uploading daemon bundle...");
+					await provisioner.provisionDaemon();
+					console.log("[remote] Daemon bundle uploaded");
 
-					// Step 4: Forward remote daemon socket to local temp path
-					const remoteDaemonSocket = `~/${REMOTE_SUPERSET_DIR}/${REMOTE_DAEMON_SOCKET_NAME}`;
+					// Step 4: Ensure daemon running
+					console.log("[remote] Ensuring daemon is running...");
+					await provisioner.ensureDaemonRunning();
+					console.log("[remote] Daemon is running");
+
+					// Step 5: Forward remote daemon socket to local temp path
+					// Resolve remote home (openssh_forwardOutStreamLocal doesn't expand ~)
+					const remoteHome = (
+						await ssh.exec("echo $HOME")
+					).stdout.trim();
+					const remoteDaemonSocket = `${remoteHome}/${REMOTE_SUPERSET_DIR}/${REMOTE_DAEMON_SOCKET_NAME}`;
+					// Use short path — macOS limits Unix socket paths to 104 chars
 					const localSocketPath = join(
 						tmpdir(),
-						`superset-remote-${input.id}.sock`,
+						`spr-${input.id.slice(0, 8)}.sock`,
+					);
+					console.log(
+						`[remote] Forwarding socket ${remoteDaemonSocket} → ${localSocketPath}`,
 					);
 					await ssh.forwardUnixSocket(remoteDaemonSocket, localSocketPath);
+					console.log("[remote] Socket forwarded");
 
 					// Step 5: Set up reverse port forward for hooks
 					if (input.hooksPort) {
+						console.log(
+							`[remote] Setting up reverse port forward for hooks port ${input.hooksPort}`,
+						);
 						await ssh.setupReversePortForward(input.hooksPort);
 					}
 
@@ -300,17 +335,20 @@ export const createRemoteMachinesRouter = () => {
 					activeConnections.set(input.id, ssh);
 					updateMachineStatus(input.id, "connected");
 
+					console.log(`[remote] Connected to ${machine.name}`);
 					return { success: true, alreadyConnected: false };
 				} catch (err) {
+					const errMsg =
+						err instanceof Error ? err.message : String(err);
+					console.error(`[remote] Connect failed: ${errMsg}`);
+
 					// Clean up on failure
 					await ssh.disconnect();
 					updateMachineStatus(input.id, "disconnected");
 
 					throw new TRPCError({
 						code: "INTERNAL_SERVER_ERROR",
-						message: `Failed to connect to ${machine.name}: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
+						message: `Failed to connect to ${machine.name}: ${errMsg}`,
 						cause: err,
 					});
 				}
@@ -330,10 +368,12 @@ export const createRemoteMachinesRouter = () => {
 				const conn = activeConnections.get(input.id);
 
 				if (conn) {
+					console.log(`[remote] Disconnecting ${input.id}...`);
 					const registry = getWorkspaceRuntimeRegistry();
 					registry.unregisterRemoteRuntime(input.id);
 					await conn.disconnect();
 					activeConnections.delete(input.id);
+					console.log("[remote] Disconnected");
 				}
 
 				updateMachineStatus(input.id, "disconnected");

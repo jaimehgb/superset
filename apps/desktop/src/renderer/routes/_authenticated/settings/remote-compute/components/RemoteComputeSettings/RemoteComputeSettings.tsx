@@ -106,7 +106,15 @@ function MachineCard({
 		},
 	);
 
+	const [connectError, setConnectError] = useState<string | null>(null);
+
 	const connectMachine = electronTrpc.remoteMachines.connect.useMutation({
+		onMutate: () => {
+			setConnectError(null);
+		},
+		onError: (err) => {
+			setConnectError(err.message);
+		},
 		onSettled: () => {
 			utils.remoteMachines.list.invalidate();
 		},
@@ -125,6 +133,7 @@ function MachineCard({
 
 	const handleToggleConnection = useCallback(() => {
 		setTestResult(null);
+		setConnectError(null);
 		if (isConnected) {
 			disconnectMachine.mutate({ id: machine.id });
 		} else {
@@ -184,6 +193,13 @@ function MachineCard({
 					}`}
 				>
 					{testResult.message}
+				</div>
+			)}
+
+			{/* Connect error */}
+			{connectError && (
+				<div className="text-sm px-3 py-2 rounded bg-destructive/10 text-destructive">
+					{connectError}
 				</div>
 			)}
 

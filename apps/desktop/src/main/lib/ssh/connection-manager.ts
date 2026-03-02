@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import net from "node:net";
 import type { SFTPWrapper } from "ssh2";
 import { Client } from "ssh2";
@@ -12,6 +14,20 @@ import { REMOTE_HOOK_PORT } from "./types";
 
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
+const SSH_READY_TIMEOUT_MS = 15_000;
+
+/** Expand leading `~` to the user's home directory. */
+function expandHome(filePath: string): string {
+	if (filePath.startsWith("~/") || filePath === "~") {
+		return resolve(homedir(), filePath.slice(2));
+	}
+	return filePath;
+}
+
+/** Shell-escape a string for use as a single argument. */
+function shellEscape(s: string): string {
+	return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 export class SshConnectionManager extends EventEmitter {
 	private client: Client;
@@ -67,10 +83,11 @@ export class SshConnectionManager extends EventEmitter {
 				port: this.config.port,
 				username: this.config.username,
 				privateKey: this.config.identityFile
-					? readFileSync(this.config.identityFile)
+					? readFileSync(expandHome(this.config.identityFile))
 					: undefined,
 				agent: process.env.SSH_AUTH_SOCK,
 				agentForward: true,
+				readyTimeout: SSH_READY_TIMEOUT_MS,
 				keepaliveInterval: 15_000,
 				keepaliveCountMax: 3,
 			});
@@ -100,8 +117,21 @@ export class SshConnectionManager extends EventEmitter {
 	async exec(command: string): Promise<SshExecResult> {
 		this.assertConnected();
 
+		// Wrap in a login shell that also sources .bashrc and common version
+		// managers (nvm, fnm).  `bash -l` only sources .bash_profile/.profile,
+		// which often don't source .bashrc — but nvm/fnm setup lives in .bashrc.
+		// All preamble output is suppressed (>/dev/null 2>&1) to avoid polluting
+		// the command's stdout with shell init noise.
+		const envPreamble = [
+			". ~/.bashrc >/dev/null 2>&1",
+			'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+			'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1',
+			'command -v fnm >/dev/null 2>&1 && eval "$(fnm env 2>/dev/null)" >/dev/null 2>&1',
+		].join("; ");
+		const wrapped = `bash -lc ${shellEscape(`${envPreamble}; ${command}`)}`;
+
 		return new Promise<SshExecResult>((resolve, reject) => {
-			this.client.exec(command, (err, stream) => {
+			this.client.exec(wrapped, (err, stream) => {
 				if (err) {
 					reject(err);
 					return;
@@ -135,8 +165,14 @@ export class SshConnectionManager extends EventEmitter {
 	): Promise<void> {
 		this.assertConnected();
 
-		// Clean up any existing socket server
+		// Clean up any existing socket server and stale socket file
 		this.closeSocketServer();
+		try {
+			const { unlinkSync } = require("node:fs");
+			unlinkSync(localPath);
+		} catch {
+			// Ignore — file may not exist
+		}
 
 		this.localSocketPath = localPath;
 
