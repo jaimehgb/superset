@@ -10,6 +10,7 @@ import {
 	TerminalKilledError,
 } from "main/lib/terminal/errors";
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
+import type { TerminalRuntime } from "main/lib/workspace-runtime";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
@@ -32,8 +33,40 @@ const SAFE_ID = z
 	);
 
 /**
+ * Look up the remoteMachineId for a workspace by querying the local DB.
+ *
+ * Given a workspaceId, joins through workspace -> project to find the
+ * project's remoteMachineId. Returns null if the workspace doesn't exist,
+ * the project doesn't exist, or no remote machine is assigned.
+ */
+export function lookupProjectMachineId(workspaceId: string): string | null {
+	const workspace = localDb
+		.select({ projectId: workspaces.projectId })
+		.from(workspaces)
+		.where(eq(workspaces.id, workspaceId))
+		.get();
+	if (!workspace) return null;
+
+	const project = localDb
+		.select({ remoteMachineId: projects.remoteMachineId })
+		.from(projects)
+		.where(eq(projects.id, workspace.projectId))
+		.get();
+
+	return project?.remoteMachineId ?? null;
+}
+
+/**
  * Terminal router using daemon-backed terminal runtime
  * Sessions are keyed by paneId and linked to workspaces for cwd resolution
+ *
+ * Runtime selection:
+ * - createOrAttach resolves the runtime per-workspace using the registry.
+ *   If the workspace's project has a remoteMachineId and a remote runtime
+ *   is registered for that machine, the remote runtime is used.
+ * - Pane-scoped operations (write, resize, signal, etc.) use a paneId-to-runtime
+ *   map populated by createOrAttach, falling back to the default local runtime.
+ * - Global operations (listDaemonSessions, killAll, etc.) use the default local runtime.
  *
  * Environment variables set for terminal sessions:
  * - PATH: Prepends ~/.superset/bin so wrapper scripts intercept agent commands
@@ -47,13 +80,31 @@ const SAFE_ID = z
  */
 export const createTerminalRouter = () => {
 	const registry = getWorkspaceRuntimeRegistry();
-	const terminal = registry.getDefault().terminal;
+
+	// Wire the project machine lookup so the registry can resolve
+	// workspace -> project -> remoteMachineId for getForWorkspaceId()
+	registry.setProjectMachineLookup(lookupProjectMachineId);
+
+	// Default terminal for global/legacy operations (management, restart, etc.)
+	const defaultTerminal = registry.getDefault().terminal;
 	if (DEBUG_TERMINAL) {
 		console.log(
 			"[Terminal Router] Using terminal runtime, capabilities:",
-			terminal.capabilities,
+			defaultTerminal.capabilities,
 		);
 	}
+
+	// Track which terminal runtime owns each pane so pane-scoped operations
+	// (write, resize, signal, kill, stream) route to the correct backend.
+	const paneTerminals = new Map<string, TerminalRuntime>();
+
+	/**
+	 * Get the terminal runtime for a pane.
+	 * Returns the runtime that created the pane, or the default if unknown.
+	 */
+	const getTerminalForPane = (paneId: string): TerminalRuntime => {
+		return paneTerminals.get(paneId) ?? defaultTerminal;
+	};
 
 	return router({
 		createOrAttach: publicProcedure
@@ -98,6 +149,13 @@ export const createTerminalRouter = () => {
 				}
 				const cwd = resolveCwd(cwdOverride, workspacePath);
 
+				// Resolve the runtime for this workspace (local or remote)
+				const runtime = registry.getForWorkspaceId(workspaceId);
+				const terminal = runtime.terminal;
+
+				// Track which terminal owns this pane for future operations
+				paneTerminals.set(paneId, terminal);
+
 				if (DEBUG_TERMINAL) {
 					console.log("[Terminal Router] createOrAttach called:", {
 						paneId,
@@ -107,6 +165,7 @@ export const createTerminalRouter = () => {
 						resolvedCwd: cwd,
 						cols,
 						rows,
+						runtimeId: runtime.id,
 					});
 				}
 
@@ -202,15 +261,16 @@ export const createTerminalRouter = () => {
 			)
 			.mutation(async ({ input }) => {
 				const shouldThrow = input.throwOnError ?? false;
+				const paneTerminal = getTerminalForPane(input.paneId);
 				try {
-					terminal.write(input);
+					paneTerminal.write(input);
 				} catch (error) {
 					const message =
 						error instanceof Error ? error.message : "Write failed";
 
 					// Emit exit instead of error for deleted sessions to prevent toast floods
 					if (message.includes("not found or not alive")) {
-						terminal.emit(`exit:${input.paneId}`, 0, 15);
+						paneTerminal.emit(`exit:${input.paneId}`, 0, 15);
 						if (shouldThrow) {
 							throw new TRPCError({
 								code: "BAD_REQUEST",
@@ -220,7 +280,7 @@ export const createTerminalRouter = () => {
 						return;
 					}
 
-					terminal.emit(`error:${input.paneId}`, {
+					paneTerminal.emit(`error:${input.paneId}`, {
 						error: message,
 						code: "WRITE_FAILED",
 					});
@@ -236,7 +296,7 @@ export const createTerminalRouter = () => {
 		ackColdRestore: publicProcedure
 			.input(z.object({ paneId: z.string() }))
 			.mutation(({ input }) => {
-				terminal.ackColdRestore(input.paneId);
+				getTerminalForPane(input.paneId).ackColdRestore(input.paneId);
 			}),
 
 		resize: publicProcedure
@@ -249,7 +309,7 @@ export const createTerminalRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				terminal.resize(input);
+				getTerminalForPane(input.paneId).resize(input);
 			}),
 
 		signal: publicProcedure
@@ -260,7 +320,7 @@ export const createTerminalRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				terminal.signal(input);
+				getTerminalForPane(input.paneId).signal(input);
 			}),
 
 		kill: publicProcedure
@@ -270,7 +330,9 @@ export const createTerminalRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				await terminal.kill(input);
+				await getTerminalForPane(input.paneId).kill(input);
+				// Clean up pane tracking on kill
+				paneTerminals.delete(input.paneId);
 			}),
 
 		detach: publicProcedure
@@ -280,7 +342,7 @@ export const createTerminalRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				terminal.detach(input);
+				getTerminalForPane(input.paneId).detach(input);
 			}),
 
 		clearScrollback: publicProcedure
@@ -290,17 +352,17 @@ export const createTerminalRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				await terminal.clearScrollback(input);
+				await getTerminalForPane(input.paneId).clearScrollback(input);
 			}),
 
 		listDaemonSessions: publicProcedure.query(async () => {
-			const { sessions } = await terminal.management.listSessions();
+			const { sessions } = await defaultTerminal.management.listSessions();
 			return { sessions };
 		}),
 
 		killAllDaemonSessions: publicProcedure.mutation(async () => {
 			const client = getTerminalHostClient();
-			const before = await terminal.management.listSessions();
+			const before = await defaultTerminal.management.listSessions();
 			const beforeIds = before.sessions.map((s) => s.sessionId);
 			console.log(
 				"[killAllDaemonSessions] Before kill:",
@@ -311,7 +373,9 @@ export const createTerminalRouter = () => {
 
 			if (beforeIds.length > 0) {
 				const results = await Promise.allSettled(
-					beforeIds.map((paneId) => terminal.kill({ paneId })),
+					beforeIds.map((paneId) =>
+						getTerminalForPane(paneId).kill({ paneId }),
+					),
 				);
 				for (const [index, result] of results.entries()) {
 					if (result.status === "rejected") {
@@ -365,7 +429,10 @@ export const createTerminalRouter = () => {
 		killDaemonSessionsForWorkspace: publicProcedure
 			.input(z.object({ workspaceId: z.string() }))
 			.mutation(async ({ input }) => {
-				const { sessions } = await terminal.management.listSessions();
+				const wsTerminal = registry.getForWorkspaceId(
+					input.workspaceId,
+				).terminal;
+				const { sessions } = await wsTerminal.management.listSessions();
 				const toKill = sessions.filter(
 					(session) => session.workspaceId === input.workspaceId,
 				);
@@ -373,7 +440,7 @@ export const createTerminalRouter = () => {
 				if (toKill.length > 0) {
 					const paneIds = toKill.map((session) => session.sessionId);
 					const results = await Promise.allSettled(
-						paneIds.map((paneId) => terminal.kill({ paneId })),
+						paneIds.map((paneId) => wsTerminal.kill({ paneId })),
 					);
 					for (const [index, result] of results.entries()) {
 						if (result.status === "rejected") {
@@ -394,7 +461,7 @@ export const createTerminalRouter = () => {
 			}),
 
 		clearTerminalHistory: publicProcedure.mutation(async () => {
-			await terminal.management.resetHistoryPersistence();
+			await defaultTerminal.management.resetHistoryPersistence();
 			return { success: true };
 		}),
 
@@ -406,7 +473,7 @@ export const createTerminalRouter = () => {
 		getSession: publicProcedure
 			.input(z.string())
 			.query(async ({ input: paneId }) => {
-				return terminal.getSession(paneId);
+				return getTerminalForPane(paneId).getSession(paneId);
 			}),
 
 		getWorkspaceCwd: publicProcedure
@@ -447,6 +514,8 @@ export const createTerminalRouter = () => {
 					| { type: "disconnect"; reason: string }
 					| { type: "error"; error: string; code?: string }
 				>((emit) => {
+					const paneTerminal = getTerminalForPane(paneId);
+
 					if (DEBUG_TERMINAL) {
 						console.log(`[Terminal Stream] Subscribe: ${paneId}`);
 					}
@@ -484,19 +553,19 @@ export const createTerminalRouter = () => {
 						});
 					};
 
-					terminal.on(`data:${paneId}`, onData);
-					terminal.on(`exit:${paneId}`, onExit);
-					terminal.on(`disconnect:${paneId}`, onDisconnect);
-					terminal.on(`error:${paneId}`, onError);
+					paneTerminal.on(`data:${paneId}`, onData);
+					paneTerminal.on(`exit:${paneId}`, onExit);
+					paneTerminal.on(`disconnect:${paneId}`, onDisconnect);
+					paneTerminal.on(`error:${paneId}`, onError);
 
 					return () => {
 						if (DEBUG_TERMINAL) {
 							console.log(`[Terminal Stream] Unsubscribe: ${paneId}`);
 						}
-						terminal.off(`data:${paneId}`, onData);
-						terminal.off(`exit:${paneId}`, onExit);
-						terminal.off(`disconnect:${paneId}`, onDisconnect);
-						terminal.off(`error:${paneId}`, onError);
+						paneTerminal.off(`data:${paneId}`, onData);
+						paneTerminal.off(`exit:${paneId}`, onExit);
+						paneTerminal.off(`disconnect:${paneId}`, onDisconnect);
+						paneTerminal.off(`error:${paneId}`, onError);
 					};
 				});
 			}),

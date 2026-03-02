@@ -19,6 +19,7 @@ export {
 	resetWorkspaceRuntimeRegistry,
 } from "./registry";
 export type {
+	ProjectMachineLookup,
 	TerminalCapabilities,
 	TerminalEventSource,
 	TerminalManagement,

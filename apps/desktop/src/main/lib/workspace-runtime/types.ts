@@ -211,19 +211,51 @@ export interface WorkspaceRuntime {
  * This design allows local + cloud workspaces to coexist later without
  * re-spreading backend-specific branching throughout the application.
  */
+/**
+ * Lookup function that resolves a workspaceId to its project's remoteMachineId.
+ * Returns the machineId if the workspace's project has a remote machine assigned,
+ * or null if the workspace should use the local runtime.
+ */
+export type ProjectMachineLookup = (workspaceId: string) => string | null;
+
 export interface WorkspaceRuntimeRegistry {
 	/**
 	 * Get the runtime for a specific workspace.
-	 * Currently always returns the default local runtime,
-	 * but the interface supports per-workspace selection for cloud.
+	 *
+	 * If a project machine lookup has been set (via setProjectMachineLookup),
+	 * this checks the workspace's project for a remoteMachineId and returns
+	 * the corresponding remote runtime if registered. Otherwise falls back
+	 * to the default local runtime.
 	 */
 	getForWorkspaceId(workspaceId: string): WorkspaceRuntime;
+
+	/**
+	 * Get the runtime for a specific machine ID.
+	 *
+	 * Returns the registered remote runtime if one exists for the given machineId,
+	 * otherwise returns the default local runtime. Accepts null for convenience
+	 * (returns local runtime).
+	 */
+	getForMachineId(machineId: string | null): WorkspaceRuntime;
 
 	/**
 	 * Get the default runtime (for global/legacy endpoints).
 	 * Used by settings screens and endpoints that don't have workspace context.
 	 */
 	getDefault(): WorkspaceRuntime;
+
+	// ===========================================================================
+	// Project Machine Lookup
+	// ===========================================================================
+
+	/**
+	 * Set the function used to resolve a workspaceId to its project's remoteMachineId.
+	 *
+	 * This is injected after construction because the registry is created before
+	 * the tRPC routers (which have access to the local DB). The lookup function
+	 * is synchronous since better-sqlite3 queries are synchronous.
+	 */
+	setProjectMachineLookup(fn: ProjectMachineLookup): void;
 
 	// ===========================================================================
 	// Remote Runtime Management
