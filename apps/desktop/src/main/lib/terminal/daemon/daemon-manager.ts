@@ -41,9 +41,9 @@ export class DaemonTerminalManager extends EventEmitter {
 	private coldRestoreInfo = new Map<string, ColdRestoreInfo>();
 	private cleanupTimeouts = new Map<string, NodeJS.Timeout>();
 
-	constructor() {
+	constructor(injectedClient?: TerminalHostClient) {
 		super();
-		this.initializeClient();
+		this.initializeClient(injectedClient);
 	}
 
 	private recordKilledSession(paneId: string): void {
@@ -71,8 +71,8 @@ export class DaemonTerminalManager extends EventEmitter {
 		this.killedSessionTombstones.delete(paneId);
 	}
 
-	private initializeClient(): void {
-		this.client = getTerminalHostClient();
+	private initializeClient(injectedClient?: TerminalHostClient): void {
+		this.client = injectedClient ?? getTerminalHostClient();
 		this.setupClientEventHandlers();
 	}
 
