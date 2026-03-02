@@ -9,6 +9,8 @@ import { z } from "zod";
 import { publicProcedure, router } from "../../..";
 import { getPresetsForTrigger } from "../../settings";
 import { getProject, getWorkspaceWithRelations } from "../utils/db-helpers";
+import { resolveGitOps } from "main/lib/git";
+import { getActiveConnection } from "../../remote-machines";
 import { listBranches } from "../utils/git";
 import { resolveWorktreePath } from "../utils/resolve-worktree-path";
 import { loadSetupConfig } from "../utils/setup";
@@ -87,7 +89,16 @@ async function resolveRetryTarget({
 		return { branch: currentBranch, worktreePath: currentPath };
 	}
 
-	const { local, remote } = await listBranches(project.mainRepoPath);
+	const sshConn = project.remoteMachineId
+		? getActiveConnection(project.remoteMachineId)
+		: undefined;
+	if (project.remoteMachineId && !sshConn) {
+		throw new Error(
+			"Remote machine is not connected. Please connect to the machine and try again.",
+		);
+	}
+	const gitOps = resolveGitOps(sshConn);
+	const { local, remote } = await listBranches(project.mainRepoPath, undefined, gitOps);
 	const deduplicatedBranch = deduplicateBranchName(currentBranch, [
 		...local,
 		...remote,

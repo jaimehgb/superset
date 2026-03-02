@@ -184,6 +184,13 @@ export interface TabsStore extends TabsState {
 	/** Switch a Mastra chat pane to a different session */
 	switchChatMastraSession: (paneId: string, sessionId: string | null) => void;
 
+	// Session adoption (for remote workspace reconnect)
+	/** Adopt daemon sessions by creating tabs with specific pane IDs */
+	adoptSessions: (
+		workspaceId: string,
+		sessions: Array<{ paneId: string }>,
+	) => void;
+
 	// Query helpers
 	getTabsByWorkspace: (workspaceId: string) => Tab[];
 	getActiveTab: (workspaceId: string) => Tab | null;

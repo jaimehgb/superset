@@ -10,7 +10,7 @@ import {
 	type TerminalHostClient,
 } from "../../terminal-host/client";
 import type { ListSessionsResponse } from "../../terminal-host/types";
-import { buildTerminalEnv, getDefaultShell } from "../env";
+import { buildRemoteMetadataEnv, buildTerminalEnv, getDefaultShell } from "../env";
 import { TerminalKilledError } from "../errors";
 import { portManager } from "../port-manager";
 import type { CreateSessionParams, SessionResult } from "../types";
@@ -41,8 +41,13 @@ export class DaemonTerminalManager extends EventEmitter {
 	private coldRestoreInfo = new Map<string, ColdRestoreInfo>();
 	private cleanupTimeouts = new Map<string, NodeJS.Timeout>();
 
-	constructor(injectedClient?: TerminalHostClient) {
+	/** When true, the daemon runs on a remote machine. Shell and base env
+	 *  should come from the daemon's own process.env, not the local Electron. */
+	private readonly isRemote: boolean;
+
+	constructor(injectedClient?: TerminalHostClient, opts?: { remote?: boolean }) {
 		super();
+		this.isRemote = opts?.remote ?? false;
 		this.initializeClient(injectedClient);
 	}
 
@@ -354,6 +359,12 @@ export class DaemonTerminalManager extends EventEmitter {
 			await this.ensureDaemonSessionIdsHydrated();
 			const daemonHasSession = this.daemonAliveSessionIds.has(paneId);
 
+			if (this.isRemote) {
+				console.log(
+					`[DaemonTerminalManager] Remote createOrAttach: paneId=${paneId} daemonHasSession=${daemonHasSession} aliveSessionIds=[${[...this.daemonAliveSessionIds].join(",")}]`,
+				);
+			}
+
 			if (!daemonHasSession && !skipColdRestore) {
 				const coldRestoreResult = await this.attemptColdRestore({
 					paneId,
@@ -370,17 +381,30 @@ export class DaemonTerminalManager extends EventEmitter {
 				await this.historyManager.cleanupHistory(paneId, workspaceId);
 			}
 
-			const shell = getDefaultShell();
-			const env = buildTerminalEnv({
-				shell,
-				paneId,
-				tabId,
-				workspaceId,
-				workspaceName,
-				workspacePath,
-				rootPath,
-				themeType,
-			});
+			// For remote terminals, let the daemon resolve its own shell and base
+			// env from the remote machine's process.env. We only send the
+			// Superset metadata vars that the daemon cannot know on its own.
+			const shell = this.isRemote ? undefined : getDefaultShell();
+			const env = this.isRemote
+				? buildRemoteMetadataEnv({
+						paneId,
+						tabId,
+						workspaceId,
+						workspaceName,
+						workspacePath,
+						rootPath,
+						themeType,
+					})
+				: buildTerminalEnv({
+						shell: shell!,
+						paneId,
+						tabId,
+						workspaceId,
+						workspaceName,
+						workspacePath,
+						rootPath,
+						themeType,
+					});
 
 			if (DEBUG_TERMINAL) {
 				console.log("[DaemonTerminalManager] Calling daemon createOrAttach:", {
@@ -389,6 +413,7 @@ export class DaemonTerminalManager extends EventEmitter {
 					cwd,
 					cols,
 					rows,
+					isRemote: this.isRemote,
 				});
 			}
 
@@ -408,6 +433,12 @@ export class DaemonTerminalManager extends EventEmitter {
 			});
 
 			this.daemonAliveSessionIds.add(paneId);
+
+			if (this.isRemote) {
+				console.log(
+					`[DaemonTerminalManager] Remote daemon response: paneId=${paneId} isNew=${response.isNew} wasRecovered=${response.wasRecovered} snapshotBytes=${response.snapshot.snapshotAnsi?.length ?? 0}`,
+				);
+			}
 
 			const sessionCwd = response.snapshot.cwd || cwd || "";
 			const effectiveCols = response.snapshot.cols || cols;

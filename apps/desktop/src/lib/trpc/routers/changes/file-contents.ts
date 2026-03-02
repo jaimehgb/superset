@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import type { FileContents } from "shared/changes-types";
 import { detectLanguage } from "shared/detect-language";
 import { getImageMimeType } from "shared/file-types";
@@ -9,6 +10,7 @@ import {
 	PathValidationError,
 	secureFs,
 } from "./security";
+import { isRemoteWorktree } from "./utils/is-remote-worktree";
 
 /** Maximum file size for reading (2 MiB) */
 const MAX_FILE_SIZE = 2 * 1024 * 1024;
@@ -77,6 +79,14 @@ export const createFileContentsRouter = () => {
 			)
 			.query(async ({ input }): Promise<FileContents> => {
 				assertRegisteredWorktree(input.worktreePath);
+
+				if (isRemoteWorktree(input.worktreePath)) {
+					throw new TRPCError({
+						code: "PRECONDITION_FAILED",
+						message:
+							"File contents not available for remote projects",
+					});
+				}
 
 				const git = simpleGit(input.worktreePath);
 				const defaultBranch = input.defaultBranch || "main";

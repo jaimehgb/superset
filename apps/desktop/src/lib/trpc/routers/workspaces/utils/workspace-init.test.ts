@@ -312,12 +312,14 @@ describe("initializeWorkspaceWorktree", () => {
 			const calls = mockRemoteGitOps.worktreeAdd.mock.calls as unknown[][];
 			expect(calls.length).toBeGreaterThan(0);
 			const callArgs = calls[0]!;
-			// First arg is repoPath (mainRepoPath from params)
+			// First arg is mainRepoPath
 			expect(callArgs[0]).toBe("/local/repos/my-project");
-			// Second arg is branch name
-			expect(callArgs[1]).toBe("my-branch");
-			// Third arg is worktree path
-			expect(callArgs[2]).toBe("/local/worktrees/my-branch");
+			// Second arg is worktree path
+			expect(callArgs[1]).toBe("/local/worktrees/my-branch");
+			// Third arg is args array for `git worktree add`
+			const args = callArgs[2] as string[];
+			expect(args).toContain("/local/worktrees/my-branch");
+			expect(args).toContain("my-branch");
 		});
 
 		test("fails with error when SSH connection is not available", async () => {

@@ -8,6 +8,7 @@ import {
 } from "../workspaces/utils/shell-env";
 import { isUpstreamMissingError } from "./git-utils";
 import { assertRegisteredWorktree } from "./security";
+import { isRemoteWorktree } from "./utils/is-remote-worktree";
 
 export { isUpstreamMissingError };
 
@@ -237,6 +238,12 @@ async function openPRInBrowser(
 }
 
 async function getGitWithShellPath(worktreePath: string) {
+	if (isRemoteWorktree(worktreePath)) {
+		throw new TRPCError({
+			code: "PRECONDITION_FAILED",
+			message: "Git operations not available for remote projects",
+		});
+	}
 	const git = simpleGit(worktreePath);
 	git.env(await getProcessEnvWithShellPath());
 	return git;

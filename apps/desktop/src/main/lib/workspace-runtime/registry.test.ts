@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { RemoteRuntimeNotConnectedError } from "./errors";
 import {
 	getWorkspaceRuntimeRegistry,
 	resetWorkspaceRuntimeRegistry,
@@ -55,13 +56,13 @@ describe("WorkspaceRuntimeRegistry", () => {
 			expect(lookup).toHaveBeenCalledWith("workspace-with-remote");
 		});
 
-		it("falls back to local runtime when lookup returns a machineId that is not registered", () => {
+		it("throws RemoteRuntimeNotConnectedError when lookup returns a machineId that is not registered", () => {
 			const lookup = mock(() => "machine-not-registered");
 			registry.setProjectMachineLookup(lookup);
 
-			const runtime = registry.getForWorkspaceId("workspace-1");
-			const defaultRuntime = registry.getDefault();
-			expect(runtime).toBe(defaultRuntime);
+			expect(() => registry.getForWorkspaceId("workspace-1")).toThrow(
+				RemoteRuntimeNotConnectedError,
+			);
 		});
 
 		it("uses lookup result per workspace to select different runtimes", () => {
@@ -136,6 +137,23 @@ describe("WorkspaceRuntimeRegistry", () => {
 
 			const runtime = registry.getForMachineId("machine-1");
 			expect(runtime).toBe(registry.getDefault());
+		});
+
+		it("causes getForWorkspaceId to throw after unregister", () => {
+			registry.registerRemoteRuntime("machine-1", "/tmp/m1.sock");
+			const lookup = mock(() => "machine-1");
+			registry.setProjectMachineLookup(lookup);
+
+			// Before unregister: works fine
+			expect(registry.getForWorkspaceId("ws-1")).not.toBe(
+				registry.getDefault(),
+			);
+
+			// After unregister: throws
+			registry.unregisterRemoteRuntime("machine-1");
+			expect(() => registry.getForWorkspaceId("ws-1")).toThrow(
+				RemoteRuntimeNotConnectedError,
+			);
 		});
 
 		it("is a no-op for unregistered machineIds", () => {

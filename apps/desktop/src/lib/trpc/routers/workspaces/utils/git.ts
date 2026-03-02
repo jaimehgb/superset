@@ -7,9 +7,13 @@ import { promisify } from "node:util";
 import friendlyWords = require("friendly-words");
 
 import type { BranchPrefixMode } from "@superset/local-db";
+import type { GitOperations } from "main/lib/git";
+import { LocalGitOperations } from "main/lib/git";
 import simpleGit, { type StatusResult } from "simple-git";
 import { runWithPostCheckoutHookTolerance } from "../../utils/git-hook-tolerance";
 import { execWithShellEnv, getProcessEnvWithShellPath } from "./shell-env";
+
+const defaultGitOps = new LocalGitOperations();
 
 const execFileAsync = promisify(execFile);
 
@@ -315,7 +319,11 @@ const FALLBACK_MAX_SUFFIX = 100;
 
 export async function getGitAuthorName(
 	repoPath?: string,
+	gitOps?: GitOperations,
 ): Promise<string | null> {
+	if (gitOps && repoPath) {
+		return gitOps.getGitAuthorName(repoPath);
+	}
 	try {
 		const git = repoPath ? simpleGit(repoPath) : simpleGit();
 		const name = await git.getConfig("user.name");
@@ -525,10 +533,12 @@ export async function createWorktreeFromExistingBranch({
 	mainRepoPath,
 	branch,
 	worktreePath,
+	gitOps,
 }: {
 	mainRepoPath: string;
 	branch: string;
 	worktreePath: string;
+	gitOps?: GitOperations;
 }): Promise<void> {
 	try {
 		const parentDir = join(worktreePath, "..");
@@ -536,9 +546,15 @@ export async function createWorktreeFromExistingBranch({
 
 		const env = await getGitEnv();
 
-		const git = simpleGit(mainRepoPath);
-		const localBranches = await git.branchLocal();
-		const branchExistsLocally = localBranches.all.includes(branch);
+		let branchExistsLocally: boolean;
+		if (gitOps) {
+			const localBranches = await gitOps.branchLocal(mainRepoPath);
+			branchExistsLocally = localBranches.includes(branch);
+		} else {
+			const git = simpleGit(mainRepoPath);
+			const localBranches = await git.branchLocal();
+			branchExistsLocally = localBranches.all.includes(branch);
+		}
 
 		if (branchExistsLocally) {
 			await execWorktreeAdd({
@@ -548,9 +564,16 @@ export async function createWorktreeFromExistingBranch({
 				worktreePath,
 			});
 		} else {
-			const remoteBranches = await git.branch(["-r"]);
+			let hasRemoteBranch: boolean;
 			const remoteBranchName = `origin/${branch}`;
-			if (remoteBranches.all.includes(remoteBranchName)) {
+			if (gitOps) {
+				const { remote } = await gitOps.listBranches(mainRepoPath);
+				hasRemoteBranch = remote.includes(branch);
+			} else {
+				const remoteBranches = await simpleGit(mainRepoPath).branch(["-r"]);
+				hasRemoteBranch = remoteBranches.all.includes(remoteBranchName);
+			}
+			if (hasRemoteBranch) {
 				await execWorktreeAdd({
 					mainRepoPath,
 					args: [
@@ -708,8 +731,14 @@ export async function removeWorktree(
 	}
 }
 
-export async function getGitRoot(path: string): Promise<string> {
+export async function getGitRoot(
+	path: string,
+	gitOps?: GitOperations,
+): Promise<string> {
 	try {
+		if (gitOps) {
+			return await gitOps.getGitRoot(path);
+		}
 		const git = simpleGit(path);
 		const root = await git.revparse(["--show-toplevel"]);
 		return root.trim();
@@ -725,12 +754,14 @@ export async function getGitRoot(path: string): Promise<string> {
 export async function worktreeExists(
 	mainRepoPath: string,
 	worktreePath: string,
+	gitOps?: GitOperations,
 ): Promise<boolean> {
 	try {
-		const git = simpleGit(mainRepoPath);
-		const worktrees = await git.raw(["worktree", "list", "--porcelain"]);
+		const output = gitOps
+			? await gitOps.worktreeList(mainRepoPath)
+			: await simpleGit(mainRepoPath).raw(["worktree", "list", "--porcelain"]);
 
-		const lines = worktrees.split("\n");
+		const lines = output.split("\n");
 		const worktreePrefix = `worktree ${worktreePath}`;
 		return lines.some((line) => line.trim() === worktreePrefix);
 	} catch (error) {
@@ -748,10 +779,12 @@ export interface ExternalWorktree {
 
 export async function listExternalWorktrees(
 	mainRepoPath: string,
+	gitOps?: GitOperations,
 ): Promise<ExternalWorktree[]> {
 	try {
-		const git = simpleGit(mainRepoPath);
-		const output = await git.raw(["worktree", "list", "--porcelain"]);
+		const output = gitOps
+			? await gitOps.worktreeList(mainRepoPath)
+			: await simpleGit(mainRepoPath).raw(["worktree", "list", "--porcelain"]);
 
 		const result: ExternalWorktree[] = [];
 		let current: Partial<ExternalWorktree> = {};
@@ -801,13 +834,16 @@ export async function listExternalWorktrees(
 export async function getBranchWorktreePath({
 	mainRepoPath,
 	branch,
+	gitOps,
 }: {
 	mainRepoPath: string;
 	branch: string;
+	gitOps?: GitOperations;
 }): Promise<string | null> {
 	try {
-		const git = simpleGit(mainRepoPath);
-		const worktreesOutput = await git.raw(["worktree", "list", "--porcelain"]);
+		const worktreesOutput = gitOps
+			? await gitOps.worktreeList(mainRepoPath)
+			: await simpleGit(mainRepoPath).raw(["worktree", "list", "--porcelain"]);
 
 		const lines = worktreesOutput.split("\n");
 		let currentWorktreePath: string | null = null;
@@ -834,7 +870,11 @@ export async function getBranchWorktreePath({
 	}
 }
 
-export async function hasOriginRemote(mainRepoPath: string): Promise<boolean> {
+export async function hasOriginRemote(
+	mainRepoPath: string,
+	gitOps?: GitOperations,
+): Promise<boolean> {
+	if (gitOps) return gitOps.hasOriginRemote(mainRepoPath);
 	try {
 		const git = simpleGit(mainRepoPath);
 		const remotes = await git.getRemotes();
@@ -844,7 +884,12 @@ export async function hasOriginRemote(mainRepoPath: string): Promise<boolean> {
 	}
 }
 
-export async function getDefaultBranch(mainRepoPath: string): Promise<string> {
+export async function getDefaultBranch(
+	mainRepoPath: string,
+	gitOps?: GitOperations,
+): Promise<string> {
+	if (gitOps) return gitOps.getDefaultBranch(mainRepoPath);
+
 	const git = simpleGit(mainRepoPath);
 
 	// First check if we have an origin remote
@@ -911,7 +956,10 @@ export async function getDefaultBranch(mainRepoPath: string): Promise<string> {
 export async function fetchDefaultBranch(
 	mainRepoPath: string,
 	defaultBranch: string,
+	gitOps?: GitOperations,
 ): Promise<string> {
+	if (gitOps) return gitOps.fetchDefaultBranch(mainRepoPath, defaultBranch);
+
 	const git = simpleGit(mainRepoPath);
 	await git.fetch("origin", defaultBranch);
 	const commit = await git.revparse(`origin/${defaultBranch}`);
@@ -926,7 +974,10 @@ export async function fetchDefaultBranch(
  */
 export async function refreshDefaultBranch(
 	mainRepoPath: string,
+	gitOps?: GitOperations,
 ): Promise<string | null> {
+	if (gitOps) return gitOps.refreshDefaultBranch(mainRepoPath);
+
 	const git = simpleGit(mainRepoPath);
 
 	const hasRemote = await hasOriginRemote(mainRepoPath);
@@ -964,7 +1015,15 @@ export async function refreshDefaultBranch(
 export async function checkNeedsRebase(
 	worktreePath: string,
 	defaultBranch: string,
+	gitOps?: GitOperations,
 ): Promise<boolean> {
+	if (gitOps) {
+		const output = await gitOps.revList(worktreePath, [
+			"--count",
+			`HEAD..origin/${defaultBranch}`,
+		]);
+		return Number.parseInt(output.trim(), 10) > 0;
+	}
 	const git = simpleGit(worktreePath);
 	const behindCount = await git.raw([
 		"rev-list",
@@ -977,10 +1036,14 @@ export async function checkNeedsRebase(
 export async function getAheadBehindCount({
 	repoPath,
 	defaultBranch,
+	gitOps,
 }: {
 	repoPath: string;
 	defaultBranch: string;
+	gitOps?: GitOperations;
 }): Promise<{ ahead: number; behind: number }> {
+	if (gitOps) return gitOps.getAheadBehindCount(repoPath, defaultBranch);
+
 	const git = simpleGit(repoPath);
 	try {
 		const output = await git.raw([
@@ -1008,7 +1071,29 @@ export async function hasUncommittedChanges(
 
 export async function hasUnpushedCommits(
 	worktreePath: string,
+	gitOps?: GitOperations,
 ): Promise<boolean> {
+	if (gitOps) {
+		try {
+			const output = await gitOps.revList(worktreePath, [
+				"--count",
+				"@{upstream}..HEAD",
+			]);
+			return Number.parseInt(output.trim(), 10) > 0;
+		} catch {
+			try {
+				const output = await gitOps.revList(worktreePath, [
+					"--count",
+					"HEAD",
+					"--not",
+					"--remotes",
+				]);
+				return Number.parseInt(output.trim(), 10) > 0;
+			} catch {
+				return false;
+			}
+		}
+	}
 	const git = simpleGit(worktreePath);
 	try {
 		const aheadCount = await git.raw([
@@ -1196,8 +1281,9 @@ export async function detectBaseBranch(
 	worktreePath: string,
 	currentBranch: string,
 	defaultBranch: string,
+	gitOps?: GitOperations,
 ): Promise<string | null> {
-	const git = simpleGit(worktreePath);
+	const ops = gitOps || defaultGitOps;
 
 	// Candidate base branches to check, in priority order
 	const candidates = [
@@ -1218,12 +1304,16 @@ export async function detectBaseBranch(
 		try {
 			// Check if the remote branch exists
 			const remoteBranch = `origin/${candidate}`;
-			await git.raw(["rev-parse", "--verify", remoteBranch]);
+			await ops.raw(worktreePath, ["rev-parse", "--verify", remoteBranch]);
 
 			// Count how many commits the current branch is ahead of the merge-base
 			// The branch with the fewest commits "ahead" is likely the base
-			const mergeBase = await git.raw(["merge-base", "HEAD", remoteBranch]);
-			const aheadCount = await git.raw([
+			const mergeBase = await ops.raw(worktreePath, [
+				"merge-base",
+				"HEAD",
+				remoteBranch,
+			]);
+			const aheadCount = await ops.raw(worktreePath, [
 				"rev-list",
 				"--count",
 				`${mergeBase.trim()}..HEAD`,
@@ -1249,7 +1339,10 @@ export async function detectBaseBranch(
 export async function listBranches(
 	repoPath: string,
 	options?: { fetch?: boolean },
+	gitOps?: GitOperations,
 ): Promise<{ local: string[]; remote: string[] }> {
+	if (gitOps) return gitOps.listBranches(repoPath, options);
+
 	const git = simpleGit(repoPath);
 
 	// Optionally fetch and prune to get up-to-date remote refs
@@ -1279,7 +1372,10 @@ export async function listBranches(
  */
 export async function getCurrentBranch(
 	repoPath: string,
+	gitOps?: GitOperations,
 ): Promise<string | null> {
+	if (gitOps) return gitOps.getCurrentBranch(repoPath);
+
 	const git = simpleGit(repoPath);
 	try {
 		const branch = await git.revparse(["--abbrev-ref", "HEAD"]);
@@ -1320,6 +1416,7 @@ export interface CheckoutSafetyResult {
  */
 export async function checkBranchCheckoutSafety(
 	repoPath: string,
+	gitOps?: GitOperations,
 ): Promise<CheckoutSafetyResult> {
 	try {
 		const status = await getStatusNoLock(repoPath);
@@ -1357,8 +1454,12 @@ export async function checkBranchCheckoutSafety(
 
 		// Fetch and prune stale remote refs (best-effort, ignore errors if offline)
 		try {
-			const git = simpleGit(repoPath);
-			await git.fetch(["--prune"]);
+			if (gitOps) {
+				await gitOps.fetch(repoPath);
+			} else {
+				const git = simpleGit(repoPath);
+				await git.fetch(["--prune"]);
+			}
 		} catch {
 			// Ignore fetch errors
 		}
@@ -1385,7 +1486,13 @@ export async function checkBranchCheckoutSafety(
 export async function checkoutBranch(
 	repoPath: string,
 	branch: string,
+	gitOps?: GitOperations,
 ): Promise<void> {
+	if (gitOps) {
+		await gitOps.checkoutBranch(repoPath, branch);
+		return;
+	}
+
 	const git = simpleGit(repoPath);
 
 	const localBranches = await git.branchLocal();
@@ -1439,7 +1546,10 @@ export async function checkoutBranch(
 export async function refExistsLocally(
 	repoPath: string,
 	ref: string,
+	gitOps?: GitOperations,
 ): Promise<boolean> {
+	if (gitOps) return gitOps.refExistsLocally(repoPath, ref);
+
 	const git = simpleGit(repoPath);
 	try {
 		// Use --verify --quiet to check if ref exists without output
@@ -1468,20 +1578,21 @@ export function sanitizeGitError(message: string): string {
 export async function safeCheckoutBranch(
 	repoPath: string,
 	branch: string,
+	gitOps?: GitOperations,
 ): Promise<void> {
-	const currentBranch = await getCurrentBranch(repoPath);
+	const currentBranch = await getCurrentBranch(repoPath, gitOps);
 	if (currentBranch === branch) {
 		return;
 	}
 
-	const safety = await checkBranchCheckoutSafety(repoPath);
+	const safety = await checkBranchCheckoutSafety(repoPath, gitOps);
 	if (!safety.safe) {
 		throw new Error(safety.error);
 	}
 
-	await checkoutBranch(repoPath, branch);
+	await checkoutBranch(repoPath, branch, gitOps);
 
-	const verifyBranch = await getCurrentBranch(repoPath);
+	const verifyBranch = await getCurrentBranch(repoPath, gitOps);
 	if (verifyBranch !== branch) {
 		throw new Error(
 			`Branch checkout verification failed: expected "${branch}" but HEAD is on "${verifyBranch ?? "detached HEAD"}"`,
@@ -1637,8 +1748,7 @@ export async function createWorktreeFromPr({
 		const parentDir = join(worktreePath, "..");
 		await mkdir(parentDir, { recursive: true });
 
-		const git = simpleGit(mainRepoPath);
-		const localBranches = await git.branchLocal();
+		const localBranches = await simpleGit(mainRepoPath).branchLocal();
 		const branchExists = localBranches.all.includes(localBranchName);
 
 		if (branchExists) {

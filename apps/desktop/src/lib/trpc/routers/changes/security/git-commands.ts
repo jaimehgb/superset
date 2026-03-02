@@ -1,6 +1,7 @@
 import simpleGit from "simple-git";
 import { runWithPostCheckoutHookTolerance } from "../../utils/git-hook-tolerance";
 import { getProcessEnvWithShellPath } from "../../workspaces/utils/shell-env";
+import { isRemoteWorktree } from "../utils/is-remote-worktree";
 import {
 	assertRegisteredWorktree,
 	assertValidGitPath,
@@ -19,6 +20,9 @@ import {
  */
 
 async function getGitWithShellPath(worktreePath: string) {
+	if (isRemoteWorktree(worktreePath)) {
+		throw new Error("Git commands not available for remote projects");
+	}
 	const git = simpleGit(worktreePath);
 	git.env(await getProcessEnvWithShellPath());
 	return git;

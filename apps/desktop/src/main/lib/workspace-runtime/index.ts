@@ -13,6 +13,7 @@
  * ```
  */
 
+export { RemoteRuntimeNotConnectedError } from "./errors";
 export { LocalWorkspaceRuntime } from "./local";
 export {
 	getWorkspaceRuntimeRegistry,

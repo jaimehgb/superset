@@ -36,6 +36,7 @@ import {
 	worktreeExists,
 } from "../utils/git";
 import { resolveGitOps } from "main/lib/git";
+import { getActiveConnection } from "../../remote-machines";
 import { resolveWorktreePath } from "../utils/resolve-worktree-path";
 import { copySupersetConfigToWorktree, loadSetupConfig } from "../utils/setup";
 import { initializeWorkspaceWorktree } from "../utils/workspace-init";
@@ -171,9 +172,10 @@ interface HandleNewWorktreeParams {
 
 async function getKnownBranchesSafe(
 	repoPath: string,
+	gitOps?: import("main/lib/git").GitOperations,
 ): Promise<string[] | undefined> {
 	try {
-		const { local, remote } = await listBranches(repoPath);
+		const { local, remote } = await listBranches(repoPath, undefined, gitOps);
 		return [...local, ...remote];
 	} catch (error) {
 		console.warn(
@@ -306,6 +308,16 @@ export const createCreateProcedures = () => {
 					throw new Error(`Project ${input.projectId} not found`);
 				}
 
+				const sshConn = project.remoteMachineId
+					? getActiveConnection(project.remoteMachineId)
+					: undefined;
+				if (project.remoteMachineId && !sshConn) {
+					throw new Error(
+						"Remote machine is not connected. Please connect to the machine and try again.",
+					);
+				}
+				const gitOps = resolveGitOps(sshConn);
+
 				let existingBranchName: string | undefined;
 				if (input.useExistingBranch) {
 					existingBranchName = input.branchName?.trim();
@@ -318,6 +330,7 @@ export const createCreateProcedures = () => {
 					const existingWorktreePath = await getBranchWorktreePath({
 						mainRepoPath: project.mainRepoPath,
 						branch: existingBranchName,
+						gitOps,
 					});
 					if (existingWorktreePath) {
 						throw new Error(
@@ -326,7 +339,7 @@ export const createCreateProcedures = () => {
 					}
 				}
 
-				const { local, remote } = await listBranches(project.mainRepoPath);
+				const { local, remote } = await listBranches(project.mainRepoPath, undefined, gitOps);
 				const existingBranches = [...local, ...remote];
 
 				let branchPrefix: string | undefined;
@@ -479,6 +492,7 @@ export const createCreateProcedures = () => {
 					branch,
 					baseBranch: targetBranch,
 					isExplicit: Boolean(input.baseBranch?.trim()),
+					gitOps,
 				});
 
 				workspaceInitManager.startJob(workspace.id, input.projectId);
@@ -527,13 +541,16 @@ export const createCreateProcedures = () => {
 				}
 
 				let branch: string | null;
-				const gitOps = resolveGitOps(project.remoteMachineId);
-				if (gitOps) {
-					branch = input.branch || (await gitOps.getCurrentBranch(project.mainRepoPath));
-				} else {
-					// Remote machine not connected — use input or DB fallback
-					branch = input.branch || project.defaultBranch || "main";
+				const sshConn = project.remoteMachineId
+					? getActiveConnection(project.remoteMachineId)
+					: undefined;
+				if (project.remoteMachineId && !sshConn) {
+					throw new Error(
+						"Remote machine is not connected. Please connect to the machine and try again.",
+					);
 				}
+				const gitOps = resolveGitOps(sshConn);
+				branch = input.branch || (await gitOps.getCurrentBranch(project.mainRepoPath));
 				if (!branch) {
 					throw new Error("Could not determine current branch");
 				}
@@ -662,9 +679,20 @@ export const createCreateProcedures = () => {
 					throw new Error(`Project ${worktree.projectId} not found`);
 				}
 
+				const sshConnWt = project.remoteMachineId
+					? getActiveConnection(project.remoteMachineId)
+					: undefined;
+				if (project.remoteMachineId && !sshConnWt) {
+					throw new Error(
+						"Remote machine is not connected. Please connect to the machine and try again.",
+					);
+				}
+				const gitOpsWt = resolveGitOps(sshConnWt);
+
 				const exists = await worktreeExists(
 					project.mainRepoPath,
 					worktree.path,
+					gitOpsWt,
 				);
 				if (!exists) {
 					throw new Error("Worktree no longer exists on disk");
@@ -723,9 +751,20 @@ export const createCreateProcedures = () => {
 					throw new Error(`Project ${input.projectId} not found`);
 				}
 
+				const sshConnExt = project.remoteMachineId
+					? getActiveConnection(project.remoteMachineId)
+					: undefined;
+				if (project.remoteMachineId && !sshConnExt) {
+					throw new Error(
+						"Remote machine is not connected. Please connect to the machine and try again.",
+					);
+				}
+				const gitOpsExt = resolveGitOps(sshConnExt);
+
 				const exists = await worktreeExists(
 					project.mainRepoPath,
 					input.worktreePath,
+					gitOpsExt,
 				);
 				if (!exists) {
 					throw new Error("Worktree no longer exists on disk");
@@ -826,7 +865,7 @@ export const createCreateProcedures = () => {
 					};
 				}
 
-				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath);
+				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath, gitOpsExt);
 				const baseBranch = resolveWorkspaceBaseBranch({
 					workspaceBaseBranch: project.workspaceBaseBranch,
 					defaultBranch: project.defaultBranch,
@@ -888,6 +927,7 @@ export const createCreateProcedures = () => {
 					branch: input.branch,
 					baseBranch,
 					isExplicit: false,
+					gitOps: gitOpsExt,
 				});
 
 				return {
@@ -964,7 +1004,18 @@ export const createCreateProcedures = () => {
 				if (!project) {
 					throw new Error(`Project ${input.projectId} not found`);
 				}
-				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath);
+
+				const sshConnImport = project.remoteMachineId
+					? getActiveConnection(project.remoteMachineId)
+					: undefined;
+				if (project.remoteMachineId && !sshConnImport) {
+					throw new Error(
+						"Remote machine is not connected. Please connect to the machine and try again.",
+					);
+				}
+				const gitOpsImport = resolveGitOps(sshConnImport);
+
+				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath, gitOpsImport);
 				const baseBranch = resolveWorkspaceBaseBranch({
 					workspaceBaseBranch: project.workspaceBaseBranch,
 					defaultBranch: project.defaultBranch,
@@ -994,7 +1045,7 @@ export const createCreateProcedures = () => {
 
 					if (existingWorkspace) continue;
 
-					const exists = await worktreeExists(project.mainRepoPath, wt.path);
+					const exists = await worktreeExists(project.mainRepoPath, wt.path, gitOpsImport);
 					if (!exists) continue;
 
 					const maxTabOrder = getMaxWorkspaceTabOrder(input.projectId);
@@ -1017,6 +1068,7 @@ export const createCreateProcedures = () => {
 				// 2. Import external worktrees (on disk, not tracked in DB)
 				const allExternalWorktrees = await listExternalWorktrees(
 					project.mainRepoPath,
+					gitOpsImport,
 				);
 				const trackedPaths = new Set(projectWorktrees.map((wt) => wt.path));
 
@@ -1069,6 +1121,7 @@ export const createCreateProcedures = () => {
 						branch,
 						baseBranch,
 						isExplicit: false,
+						gitOps: gitOpsImport,
 					});
 
 					copySupersetConfigToWorktree(project.mainRepoPath, ext.path);

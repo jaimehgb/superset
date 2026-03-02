@@ -49,12 +49,15 @@ class RemoteTerminalRuntime implements TerminalRuntime {
 			skipSpawn: true, // Don't try to spawn daemon locally
 		};
 		const client = new TerminalHostClient(clientOptions);
-		this.backend = new DaemonTerminalManager(client);
+		this.backend = new DaemonTerminalManager(client, { remote: true });
 
-		// Remote terminals are persistent but do not support cold restore
+		// Remote terminals are persistent and support cold restore.
+		// Scrollback is written to local disk by the HistoryManager in the
+		// Electron main process, so cold restore works without reading remote
+		// files — identical to the local path.
 		this.capabilities = {
 			persistent: true,
-			coldRestore: false,
+			coldRestore: true,
 		};
 
 		this.management = {

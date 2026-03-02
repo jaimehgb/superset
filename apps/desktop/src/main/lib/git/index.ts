@@ -1,31 +1,25 @@
-export { LocalGitOperations } from "./local";
-export { RemoteGitOperations } from "./remote";
-export type { GitOperations } from "./types";
-
-import { getActiveConnection } from "lib/trpc/routers/remote-machines/connections";
+import type { SshConnectionManager } from "main/lib/ssh/connection-manager";
 import { LocalGitOperations } from "./local";
 import { RemoteGitOperations } from "./remote";
 import type { GitOperations } from "./types";
 
+export type { GitOperations } from "./types";
+export { LocalGitOperations } from "./local";
+export { RemoteGitOperations } from "./remote";
+
+const localGitOps = new LocalGitOperations();
+
 /**
- * Resolve the correct GitOperations implementation for a project.
+ * Returns the appropriate GitOperations implementation.
  *
- * - Local projects  → LocalGitOperations (uses simple-git)
- * - Remote projects → RemoteGitOperations (uses SSH)
- *
- * Returns `null` if the project is remote but the machine is not connected.
+ * - No SSH connection → local (simpleGit)
+ * - SSH connection provided → remote (runs git commands over the connection)
  */
 export function resolveGitOps(
-	remoteMachineId: string | null | undefined,
-): GitOperations | null {
-	if (!remoteMachineId) {
-		return new LocalGitOperations();
+	sshConnection?: SshConnectionManager | null,
+): GitOperations {
+	if (sshConnection) {
+		return new RemoteGitOperations(sshConnection);
 	}
-
-	const ssh = getActiveConnection(remoteMachineId);
-	if (!ssh) {
-		return null;
-	}
-
-	return new RemoteGitOperations(ssh);
+	return localGitOps;
 }

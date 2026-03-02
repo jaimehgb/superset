@@ -2,6 +2,7 @@ import { projects, workspaces, worktrees } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { eq } from "drizzle-orm";
+import { EventEmitter } from "node:events";
 import { appState } from "main/lib/app-state";
 import { localDb } from "main/lib/local-db";
 import { restartDaemon as restartDaemonShared } from "main/lib/terminal";
@@ -11,7 +12,11 @@ import {
 } from "main/lib/terminal/errors";
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { TerminalRuntime } from "main/lib/workspace-runtime";
-import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
+import {
+	RemoteRuntimeNotConnectedError,
+	getWorkspaceRuntimeRegistry,
+} from "main/lib/workspace-runtime";
+import { connectMachine } from "../remote-machines/connect-machine";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 import { assertWorkspaceUsable } from "../workspaces/utils/usability";
@@ -98,6 +103,11 @@ export const createTerminalRouter = () => {
 	// (write, resize, signal, kill, stream) route to the correct backend.
 	const paneTerminals = new Map<string, TerminalRuntime>();
 
+	// Emits when a pane is assigned to a (possibly different) terminal runtime.
+	// Stream subscriptions listen for this to re-attach event listeners when
+	// the runtime resolves after createOrAttach (e.g. remote terminals).
+	const paneAssignmentEmitter = new EventEmitter();
+
 	/**
 	 * Get the terminal runtime for a pane.
 	 * Returns the runtime that created the pane, or the default if unknown.
@@ -144,17 +154,51 @@ export const createTerminalRouter = () => {
 				const workspacePath = workspace
 					? (getWorkspacePath(workspace) ?? undefined)
 					: undefined;
-				if (workspace?.type === "worktree") {
+
+				// Check if this workspace is for a remote project
+				const isRemote = workspace
+					? lookupProjectMachineId(workspaceId) !== null
+					: false;
+
+				if (!isRemote && workspace?.type === "worktree") {
 					assertWorkspaceUsable(workspaceId, workspacePath);
 				}
-				const cwd = resolveCwd(cwdOverride, workspacePath);
+
+				// For remote workspaces, use the path directly (it's a remote path,
+				// existsSync would fail locally). For local, resolve normally.
+				const cwd = isRemote
+					? (cwdOverride ?? workspacePath)
+					: resolveCwd(cwdOverride, workspacePath);
 
 				// Resolve the runtime for this workspace (local or remote)
-				const runtime = registry.getForWorkspaceId(workspaceId);
+				// If the remote machine is not connected, auto-connect it
+				let runtime: ReturnType<typeof registry.getForWorkspaceId>;
+				try {
+					runtime = registry.getForWorkspaceId(workspaceId);
+				} catch (err) {
+					if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+					try {
+						console.log(
+							`[Terminal Router] Auto-connecting remote machine ${err.machineId} for workspace ${workspaceId}`,
+						);
+						await connectMachine(err.machineId);
+						runtime = registry.getForWorkspaceId(workspaceId);
+					} catch (connectErr) {
+						const msg =
+							connectErr instanceof Error
+								? connectErr.message
+								: String(connectErr);
+						throw new TRPCError({
+							code: "PRECONDITION_FAILED",
+							message: `Remote machine not connected and auto-connect failed: ${msg}`,
+						});
+					}
+				}
 				const terminal = runtime.terminal;
 
 				// Track which terminal owns this pane for future operations
 				paneTerminals.set(paneId, terminal);
+				paneAssignmentEmitter.emit(`assigned:${paneId}`, terminal);
 
 				if (DEBUG_TERMINAL) {
 					console.log("[Terminal Router] createOrAttach called:", {
@@ -360,6 +404,30 @@ export const createTerminalRouter = () => {
 			return { sessions };
 		}),
 
+		/**
+		 * List alive sessions for a specific workspace.
+		 * Routes through the runtime registry so it works for both local and remote.
+		 */
+		listSessionsForWorkspace: publicProcedure
+			.input(z.object({ workspaceId: z.string() }))
+			.query(async ({ input }) => {
+				try {
+					const runtime = registry.getForWorkspaceId(input.workspaceId);
+					const { sessions } =
+						await runtime.terminal.management.listSessions();
+					return {
+						sessions: sessions.filter(
+							(s) => s.workspaceId === input.workspaceId && s.isAlive,
+						),
+					};
+				} catch (err) {
+					if (err instanceof RemoteRuntimeNotConnectedError) {
+						return { sessions: [] };
+					}
+					throw err;
+				}
+			}),
+
 		killAllDaemonSessions: publicProcedure.mutation(async () => {
 			const client = getTerminalHostClient();
 			const before = await defaultTerminal.management.listSessions();
@@ -429,9 +497,17 @@ export const createTerminalRouter = () => {
 		killDaemonSessionsForWorkspace: publicProcedure
 			.input(z.object({ workspaceId: z.string() }))
 			.mutation(async ({ input }) => {
-				const wsTerminal = registry.getForWorkspaceId(
-					input.workspaceId,
-				).terminal;
+				let wsTerminal: TerminalRuntime;
+				try {
+					wsTerminal = registry.getForWorkspaceId(
+						input.workspaceId,
+					).terminal;
+				} catch (err) {
+					if (err instanceof RemoteRuntimeNotConnectedError) {
+						return { killedCount: 0 };
+					}
+					throw err;
+				}
 				const { sessions } = await wsTerminal.management.listSessions();
 				const toKill = sessions.filter(
 					(session) => session.workspaceId === input.workspaceId,
@@ -514,58 +590,93 @@ export const createTerminalRouter = () => {
 					| { type: "disconnect"; reason: string }
 					| { type: "error"; error: string; code?: string }
 				>((emit) => {
-					const paneTerminal = getTerminalForPane(paneId);
-
 					if (DEBUG_TERMINAL) {
 						console.log(`[Terminal Stream] Subscribe: ${paneId}`);
 					}
 
 					let firstDataReceived = false;
+					let detachCurrent: (() => void) | null = null;
 
-					const onData = (data: string) => {
-						if (DEBUG_TERMINAL && !firstDataReceived) {
-							firstDataReceived = true;
+					const attachTo = (terminal: TerminalRuntime) => {
+						// Detach from previous terminal if any
+						detachCurrent?.();
+
+						const onData = (data: string) => {
+							if (DEBUG_TERMINAL && !firstDataReceived) {
+								firstDataReceived = true;
+								console.log(
+									`[Terminal Stream] First data for ${paneId}: ${data.length} bytes`,
+								);
+							}
+							emit.next({ type: "data", data });
+						};
+
+						const onExit = (
+							exitCode: number,
+							signal?: number,
+							reason?: "killed" | "exited" | "error",
+						) => {
+							emit.next({ type: "exit", exitCode, signal, reason });
+						};
+
+						const onDisconnect = (reason: string) => {
+							emit.next({ type: "disconnect", reason });
+						};
+
+						const onError = (payload: {
+							error: string;
+							code?: string;
+						}) => {
+							emit.next({
+								type: "error",
+								error: payload.error,
+								code: payload.code,
+							});
+						};
+
+						terminal.on(`data:${paneId}`, onData);
+						terminal.on(`exit:${paneId}`, onExit);
+						terminal.on(`disconnect:${paneId}`, onDisconnect);
+						terminal.on(`error:${paneId}`, onError);
+
+						detachCurrent = () => {
+							terminal.off(`data:${paneId}`, onData);
+							terminal.off(`exit:${paneId}`, onExit);
+							terminal.off(`disconnect:${paneId}`, onDisconnect);
+							terminal.off(`error:${paneId}`, onError);
+							detachCurrent = null;
+						};
+					};
+
+					// Attach to whatever terminal currently owns this pane.
+					// For new remote panes, this is the default (local) terminal
+					// because createOrAttach hasn't resolved yet.
+					let currentTerminal = getTerminalForPane(paneId);
+					attachTo(currentTerminal);
+
+					// When createOrAttach assigns a (possibly different) terminal,
+					// re-attach listeners to the correct runtime.
+					const onAssigned = (newTerminal: TerminalRuntime) => {
+						if (newTerminal === currentTerminal) return;
+						if (DEBUG_TERMINAL) {
 							console.log(
-								`[Terminal Stream] First data for ${paneId}: ${data.length} bytes`,
+								`[Terminal Stream] Reassigning ${paneId} to new terminal runtime`,
 							);
 						}
-						emit.next({ type: "data", data });
+						currentTerminal = newTerminal;
+						attachTo(newTerminal);
 					};
-
-					const onExit = (
-						exitCode: number,
-						signal?: number,
-						reason?: "killed" | "exited" | "error",
-					) => {
-						// Don't emit.complete() - paneId is reused across restarts, completion would strand listeners
-						emit.next({ type: "exit", exitCode, signal, reason });
-					};
-
-					const onDisconnect = (reason: string) => {
-						emit.next({ type: "disconnect", reason });
-					};
-
-					const onError = (payload: { error: string; code?: string }) => {
-						emit.next({
-							type: "error",
-							error: payload.error,
-							code: payload.code,
-						});
-					};
-
-					paneTerminal.on(`data:${paneId}`, onData);
-					paneTerminal.on(`exit:${paneId}`, onExit);
-					paneTerminal.on(`disconnect:${paneId}`, onDisconnect);
-					paneTerminal.on(`error:${paneId}`, onError);
+					paneAssignmentEmitter.on(`assigned:${paneId}`, onAssigned);
 
 					return () => {
 						if (DEBUG_TERMINAL) {
 							console.log(`[Terminal Stream] Unsubscribe: ${paneId}`);
 						}
-						paneTerminal.off(`data:${paneId}`, onData);
-						paneTerminal.off(`exit:${paneId}`, onExit);
-						paneTerminal.off(`disconnect:${paneId}`, onDisconnect);
-						paneTerminal.off(`error:${paneId}`, onError);
+						detachCurrent?.();
+						paneAssignmentEmitter.off(
+							`assigned:${paneId}`,
+							onAssigned,
+						);
 					};
 				});
 			}),

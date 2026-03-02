@@ -11,6 +11,7 @@ import tsconfigPathsPlugin from "vite-tsconfig-paths";
 
 import { resources, version } from "./package.json";
 import {
+	bundleRemoteDaemonPlugin,
 	copyResourcesPlugin,
 	defineEnv,
 	devPath,
@@ -41,7 +42,7 @@ const sentryPlugin = process.env.SENTRY_AUTH_TOKEN
 
 export default defineConfig({
 	main: {
-		plugins: [tsconfigPaths, copyResourcesPlugin()],
+		plugins: [tsconfigPaths, copyResourcesPlugin(), bundleRemoteDaemonPlugin()],
 
 		define: {
 			"process.env.NODE_ENV": defineEnv(process.env.NODE_ENV, "production"),

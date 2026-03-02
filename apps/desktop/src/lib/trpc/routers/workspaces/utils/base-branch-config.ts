@@ -1,8 +1,12 @@
-import simpleGit from "simple-git";
+import type { GitOperations } from "main/lib/git";
+import { LocalGitOperations } from "main/lib/git";
+
+const defaultGitOps = new LocalGitOperations();
 
 interface BranchConfigParams {
 	repoPath: string;
 	branch: string;
+	gitOps?: GitOperations;
 }
 
 interface SetBranchBaseConfigParams extends BranchConfigParams {
@@ -28,12 +32,14 @@ function parseBooleanConfig(value: string): boolean {
 export async function getBranchBaseConfig({
 	repoPath,
 	branch,
+	gitOps = defaultGitOps,
 }: BranchConfigParams): Promise<BranchBaseConfig> {
-	const git = simpleGit(repoPath);
 	const [baseOutput, explicitOutput] = await Promise.all([
-		git.raw(["config", `branch.${branch}.base`]).catch(() => ""),
-		git
-			.raw(["config", "--bool", `branch.${branch}.base-explicit`])
+		gitOps
+			.configGet(repoPath, `branch.${branch}.base`)
+			.catch(() => ""),
+		gitOps
+			.raw(repoPath, ["config", "--bool", `branch.${branch}.base-explicit`])
 			.catch(() => ""),
 	]);
 
@@ -48,33 +54,39 @@ export async function setBranchBaseConfig({
 	branch,
 	baseBranch,
 	isExplicit,
+	gitOps = defaultGitOps,
 }: SetBranchBaseConfigParams): Promise<void> {
-	const git = simpleGit(repoPath);
-
-	await git
-		.raw(["config", `branch.${branch}.base`, baseBranch])
+	await gitOps
+		.configSet(repoPath, `branch.${branch}.base`, baseBranch)
 		.catch(() => {});
 	if (isExplicit) {
-		await git
-			.raw(["config", "--bool", `branch.${branch}.base-explicit`, "true"])
+		await gitOps
+			.configSet(
+				repoPath,
+				`branch.${branch}.base-explicit`,
+				"true",
+				["--bool"],
+			)
 			.catch(() => {});
 		return;
 	}
 
-	await git
-		.raw(["config", "--unset", `branch.${branch}.base-explicit`])
+	await gitOps
+		.configUnset(repoPath, `branch.${branch}.base-explicit`)
 		.catch(() => {});
 }
 
 export async function unsetBranchBaseConfig({
 	repoPath,
 	branch,
+	gitOps = defaultGitOps,
 }: BranchConfigParams): Promise<void> {
-	const git = simpleGit(repoPath);
 	await Promise.all([
-		git.raw(["config", "--unset", `branch.${branch}.base`]).catch(() => {}),
-		git
-			.raw(["config", "--unset", `branch.${branch}.base-explicit`])
+		gitOps
+			.configUnset(repoPath, `branch.${branch}.base`)
+			.catch(() => {}),
+		gitOps
+			.configUnset(repoPath, `branch.${branch}.base-explicit`)
 			.catch(() => {}),
 	]);
 }

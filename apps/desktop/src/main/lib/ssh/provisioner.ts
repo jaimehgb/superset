@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { SUPERSET_DIR_NAME } from "shared/constants";
@@ -42,8 +43,32 @@ function findDaemonBundleDir(): string {
 
 const DAEMON_BUNDLE_DIR = findDaemonBundleDir();
 
+/** Files that make up the daemon bundle. */
+const DAEMON_BUNDLE_FILES = [
+	"terminal-host.js",
+	"pty-subprocess.js",
+	"package.json",
+];
+
+/**
+ * Compute a short hash of the local daemon bundle files.
+ * Used to skip re-uploading + npm install when nothing changed.
+ */
+function computeDaemonBundleHash(): string {
+	const hash = createHash("sha256");
+	for (const file of DAEMON_BUNDLE_FILES) {
+		const filePath = join(DAEMON_BUNDLE_DIR, file);
+		if (existsSync(filePath)) {
+			hash.update(readFileSync(filePath));
+		}
+	}
+	return hash.digest("hex").slice(0, 16);
+}
+
+const REMOTE_DAEMON_VERSION_FILE = ".daemon-version";
+
 /** Bump when the set of provisioned files changes. */
-const PROVISION_VERSION = "1";
+const PROVISION_VERSION = "2";
 
 /**
  * Provisions a remote machine with the Superset terminal-host daemon,
@@ -61,6 +86,22 @@ export class RemoteProvisioner {
 	}
 
 	// ── Public API ────────────────────────────────────────────────
+
+	/**
+	 * Check whether provisioning is needed given a pre-fetched version string.
+	 * Used with the batched probe to avoid an extra SSH round-trip.
+	 */
+	needsProvisioningForVersion(remoteVersion: string): boolean {
+		return remoteVersion !== PROVISION_VERSION;
+	}
+
+	/**
+	 * Check whether daemon provisioning is needed given a pre-fetched hash.
+	 * Used with the batched probe to avoid an extra SSH round-trip.
+	 */
+	needsDaemonProvisioningForHash(remoteHash: string): boolean {
+		return remoteHash !== computeDaemonBundleHash();
+	}
 
 	/**
 	 * Check whether the remote machine needs (re-)provisioning.
@@ -150,24 +191,36 @@ export class RemoteProvisioner {
 	/**
 	 * Ensure the terminal-host daemon is running on the remote machine.
 	 *
-	 * If the daemon socket already exists the method returns immediately.
-	 * Otherwise it starts the daemon via `nohup` and polls for the socket
-	 * for up to 5 seconds before throwing.
+	 * When `forceRestart` is true, kills the existing daemon so it picks up
+	 * the freshly uploaded bundle. When false, reuses the running daemon if
+	 * the socket already exists.
 	 */
-	async ensureDaemonRunning(): Promise<void> {
+	async ensureDaemonRunning(opts?: { forceRestart?: boolean }): Promise<void> {
 		const socketPath = `~/${REMOTE_SUPERSET_DIR}/${REMOTE_DAEMON_SOCKET_NAME}`;
 
-		// Fast-path: daemon is already running
-		const check = await this.ssh.exec(
-			`test -S ${socketPath} && echo "running" || echo "stopped"`,
-		);
-		if (check.stdout.trim() === "running") {
-			return;
+		if (opts?.forceRestart) {
+			// Kill existing daemon so it picks up the freshly uploaded bundle.
+			await this.ssh.exec(
+				`pkill -f "node terminal-host.js" 2>/dev/null; rm -f ${socketPath}`,
+			);
+			// Brief pause for process cleanup
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		} else {
+			// If daemon is already running, return immediately
+			const sockCheck = await this.ssh.exec(
+				`test -S ${socketPath} && echo "ready"`,
+			);
+			if (sockCheck.stdout.trim() === "ready") {
+				console.log("[provisioner] Daemon already running, reusing");
+				return;
+			}
 		}
 
-		// Start the daemon in the background
+		// Start the daemon in the background.
+		// SUPERSET_DAEMON_DIR tells session.ts where to find pty-subprocess.js
+		// (Bun's bundler inlines __dirname as the build machine's path).
 		await this.ssh.exec(
-			`cd ~/${REMOTE_SUPERSET_DIR} && nohup node terminal-host.js > terminal-host.log 2>&1 &`,
+			`cd ~/${REMOTE_SUPERSET_DIR} && SUPERSET_DAEMON_DIR=$HOME/${REMOTE_SUPERSET_DIR} nohup node terminal-host.js > terminal-host.log 2>&1 &`,
 		);
 
 		// Poll for socket (50 x 100 ms = 5 s max)
@@ -191,6 +244,18 @@ export class RemoteProvisioner {
 	}
 
 	/**
+	 * Check whether the remote daemon bundle needs re-uploading.
+	 * Compares a hash of local bundle files against the remote marker.
+	 */
+	async needsDaemonProvisioning(): Promise<boolean> {
+		const localHash = computeDaemonBundleHash();
+		const result = await this.ssh.exec(
+			`cat ~/${REMOTE_SUPERSET_DIR}/${REMOTE_DAEMON_VERSION_FILE} 2>/dev/null || echo "missing"`,
+		);
+		return result.stdout.trim() !== localHash;
+	}
+
+	/**
 	 * Upload the pre-built terminal-host daemon bundle to the remote machine
 	 * and install native dependencies (node-pty, tree-kill).
 	 *
@@ -206,12 +271,7 @@ export class RemoteProvisioner {
 		console.log("[provisioner] DAEMON_BUNDLE_DIR =", DAEMON_BUNDLE_DIR);
 
 		// Verify local bundle exists
-		const filesToUpload = [
-			"terminal-host.js",
-			"pty-subprocess.js",
-			"package.json",
-		];
-		for (const file of filesToUpload) {
+		for (const file of DAEMON_BUNDLE_FILES) {
 			const localPath = join(DAEMON_BUNDLE_DIR, file);
 			if (!existsSync(localPath)) {
 				throw new Error(
@@ -234,7 +294,7 @@ export class RemoteProvisioner {
 			await this.ssh.exec(`mkdir -p ${remoteBase}`);
 
 			// Upload daemon bundle files
-			for (const file of filesToUpload) {
+			for (const file of DAEMON_BUNDLE_FILES) {
 				const localPath = join(DAEMON_BUNDLE_DIR, file);
 				const remotePath = `${remoteBase}/${file}`;
 				console.log(`[provisioner] Uploading ${file}...`);
@@ -248,6 +308,12 @@ export class RemoteProvisioner {
 				`cd ${remoteBase} && npm install --production 2>&1`,
 			);
 			console.log("[provisioner] npm install:", npmResult.stdout.trim().split("\n").pop());
+
+			// Stamp daemon version so future connects can skip upload+install
+			const localHash = computeDaemonBundleHash();
+			await this.ssh.exec(
+				`echo "${localHash}" > ${remoteBase}/${REMOTE_DAEMON_VERSION_FILE}`,
+			);
 		} finally {
 			sftp.end();
 		}

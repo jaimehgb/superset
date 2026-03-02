@@ -1,20 +1,19 @@
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { remoteMachines } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { localDb } from "main/lib/local-db";
 import { SshConnectionManager } from "main/lib/ssh/connection-manager";
 import { RemoteProvisioner } from "main/lib/ssh/provisioner";
-import type { SshMachineConfig } from "main/lib/ssh/types";
-import {
-	REMOTE_DAEMON_SOCKET_NAME,
-	REMOTE_SUPERSET_DIR,
-} from "main/lib/ssh/types";
 import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
+import {
+	connectMachine,
+	getMachineOrThrow,
+	toSshConfig,
+	updateMachineStatus,
+} from "./connect-machine";
+import { activeConnections } from "./connections";
 import {
 	createMachineSchema,
 	type MachineStatus,
@@ -23,71 +22,8 @@ import {
 	updateMachineSchema,
 } from "./schemas";
 
-// =============================================================================
-// Module-level State
-// =============================================================================
-
-// Connection state is extracted into a separate module so that other code
-// (e.g., workspace-init) can import `getActiveConnection` without pulling in
-// heavy tRPC / provisioner dependencies.
-import { activeConnections } from "./connections";
-
+export { connectMachine } from "./connect-machine";
 export { getActiveConnection } from "./connections";
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-function getMachineOrThrow(id: string) {
-	const machine = localDb
-		.select()
-		.from(remoteMachines)
-		.where(eq(remoteMachines.id, id))
-		.get();
-
-	if (!machine) {
-		throw new TRPCError({
-			code: "NOT_FOUND",
-			message: `Remote machine ${id} not found`,
-		});
-	}
-
-	return machine;
-}
-
-function toSshConfig(machine: {
-	id: string;
-	name: string;
-	host: string;
-	port: number;
-	username: string;
-	identityFile: string | null;
-	projectsDir: string;
-}): SshMachineConfig {
-	return {
-		id: machine.id,
-		name: machine.name,
-		host: machine.host,
-		port: machine.port,
-		username: machine.username,
-		identityFile: machine.identityFile ?? undefined,
-		projectsDir: machine.projectsDir,
-	};
-}
-
-function updateMachineStatus(
-	id: string,
-	status: "connected" | "disconnected" | "unknown",
-) {
-	localDb
-		.update(remoteMachines)
-		.set({
-			status,
-			...(status === "connected" ? { lastSeenAt: Date.now() } : {}),
-		})
-		.where(eq(remoteMachines.id, id))
-		.run();
-}
 
 // =============================================================================
 // Router
@@ -255,113 +191,16 @@ export const createRemoteMachinesRouter = () => {
 				}),
 			)
 			.mutation(async ({ input }) => {
-				const machine = getMachineOrThrow(input.id);
-
-				// If already connected, return early
-				const existingConn = activeConnections.get(input.id);
-				if (existingConn?.getState() === "connected") {
-					console.log(`[remote] Already connected to ${machine.name}`);
-					return { success: true, alreadyConnected: true };
-				}
-
-				// Clean up any stale connection
-				if (existingConn) {
-					await existingConn.disconnect();
-					activeConnections.delete(input.id);
-				}
-
-				const sshConfig = toSshConfig(machine);
-				const ssh = new SshConnectionManager(sshConfig);
-
 				try {
-					// Step 1: SSH connect
-					console.log(
-						`[remote] Connecting to ${machine.host}:${machine.port}...`,
-					);
-					await ssh.connect();
-					console.log("[remote] SSH connected");
-
-					// Step 2: Provision
-					const provisioner = new RemoteProvisioner(ssh);
-					console.log("[remote] Checking Node.js availability...");
-					const nodeVersion = await provisioner.checkNodeAvailable();
-					console.log(`[remote] Node.js ${nodeVersion}`);
-
-					if (await provisioner.needsProvisioning()) {
-						console.log("[remote] Provisioning remote machine...");
-						await provisioner.provision();
-						console.log("[remote] Provisioning complete");
-					}
-
-					// Step 3: Upload daemon bundle
-					console.log("[remote] Uploading daemon bundle...");
-					await provisioner.provisionDaemon();
-					console.log("[remote] Daemon bundle uploaded");
-
-					// Step 4: Ensure daemon running
-					console.log("[remote] Ensuring daemon is running...");
-					await provisioner.ensureDaemonRunning();
-					console.log("[remote] Daemon is running");
-
-					// Step 5: Forward remote daemon socket to local temp path
-					// Resolve remote home (openssh_forwardOutStreamLocal doesn't expand ~)
-					const remoteHome = (
-						await ssh.exec("echo $HOME")
-					).stdout.trim();
-					const remoteDaemonSocket = `${remoteHome}/${REMOTE_SUPERSET_DIR}/${REMOTE_DAEMON_SOCKET_NAME}`;
-					// Use short path — macOS limits Unix socket paths to 104 chars
-					const localSocketPath = join(
-						tmpdir(),
-						`spr-${input.id.slice(0, 8)}.sock`,
-					);
-					console.log(
-						`[remote] Forwarding socket ${remoteDaemonSocket} → ${localSocketPath}`,
-					);
-					await ssh.forwardUnixSocket(remoteDaemonSocket, localSocketPath);
-					console.log("[remote] Socket forwarded");
-
-					// Step 5b: Copy the remote daemon's auth token locally
-					// The TerminalHostClient reads the token from a local file path
-					const remoteTokenPath = `${remoteHome}/${REMOTE_SUPERSET_DIR}/terminal-host.token`;
-					const tokenResult = await ssh.exec(`cat ${remoteTokenPath}`);
-					if (tokenResult.code === 0 && tokenResult.stdout.trim()) {
-						const localTokenPath = localSocketPath.replace(".sock", ".token");
-						writeFileSync(localTokenPath, tokenResult.stdout.trim(), { mode: 0o600 });
-						console.log("[remote] Auth token copied to local path");
-					} else {
-						console.warn("[remote] Could not read remote auth token");
-					}
-
-					// Step 6: Set up reverse port forward for hooks
-					if (input.hooksPort) {
-						console.log(
-							`[remote] Setting up reverse port forward for hooks port ${input.hooksPort}`,
-						);
-						await ssh.setupReversePortForward(input.hooksPort);
-					}
-
-					// Step 6: Register remote runtime
-					const registry = getWorkspaceRuntimeRegistry();
-					registry.registerRemoteRuntime(input.id, localSocketPath);
-
-					// Step 7: Store connection and update status
-					activeConnections.set(input.id, ssh);
-					updateMachineStatus(input.id, "connected");
-
-					console.log(`[remote] Connected to ${machine.name}`);
-					return { success: true, alreadyConnected: false };
+					return await connectMachine(input.id, {
+						hooksPort: input.hooksPort,
+					});
 				} catch (err) {
 					const errMsg =
 						err instanceof Error ? err.message : String(err);
-					console.error(`[remote] Connect failed: ${errMsg}`);
-
-					// Clean up on failure
-					await ssh.disconnect();
-					updateMachineStatus(input.id, "disconnected");
-
 					throw new TRPCError({
 						code: "INTERNAL_SERVER_ERROR",
-						message: `Failed to connect to ${machine.name}: ${errMsg}`,
+						message: `Failed to connect: ${errMsg}`,
 						cause: err,
 					});
 				}

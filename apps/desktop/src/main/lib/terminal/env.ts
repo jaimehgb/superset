@@ -357,6 +357,42 @@ export function removeAppEnvVars(
 	return buildSafeEnv(env);
 }
 
+/**
+ * Build only the Superset metadata env vars for a remote terminal session.
+ *
+ * Unlike `buildTerminalEnv`, this does NOT include the local machine's
+ * process.env. The remote daemon will merge these on top of its own
+ * process.env so that SHELL, PATH, HOME etc. come from the remote machine.
+ */
+export function buildRemoteMetadataEnv(params: {
+	paneId: string;
+	tabId: string;
+	workspaceId: string;
+	workspaceName?: string;
+	workspacePath?: string;
+	rootPath?: string;
+	themeType?: "dark" | "light";
+}): Record<string, string> {
+	const { paneId, tabId, workspaceId, workspaceName, workspacePath, rootPath, themeType } = params;
+
+	const colorFgBg = themeType === "light" ? "0;15" : "15;0";
+
+	return {
+		TERM: "xterm-256color",
+		TERM_PROGRAM: "Superset",
+		COLORTERM: "truecolor",
+		COLORFGBG: colorFgBg,
+		SUPERSET_PANE_ID: paneId,
+		SUPERSET_TAB_ID: tabId,
+		SUPERSET_WORKSPACE_ID: workspaceId,
+		SUPERSET_WORKSPACE_NAME: workspaceName || "",
+		SUPERSET_WORKSPACE_PATH: workspacePath || "",
+		SUPERSET_ROOT_PATH: rootPath || "",
+		SUPERSET_ENV: env.NODE_ENV === "development" ? "development" : "production",
+		SUPERSET_HOOK_VERSION: HOOK_PROTOCOL_VERSION,
+	};
+}
+
 export function buildTerminalEnv(params: {
 	shell: string;
 	paneId: string;

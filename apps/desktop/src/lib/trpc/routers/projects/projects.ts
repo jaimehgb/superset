@@ -22,7 +22,10 @@ import {
 	deleteProjectIcon,
 	saveProjectIconFromDataUrl,
 } from "main/lib/project-icons";
-import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
+import {
+	RemoteRuntimeNotConnectedError,
+	getWorkspaceRuntimeRegistry,
+} from "main/lib/workspace-runtime";
 import { PROJECT_COLOR_VALUES } from "shared/constants/project-colors";
 import simpleGit from "simple-git";
 import { z } from "zod";
@@ -40,6 +43,8 @@ import {
 	getDefaultBranch,
 	getGitAuthorName,
 	getGitRoot,
+	hasOriginRemote,
+	listBranches,
 	NotGitRepoError,
 	refreshDefaultBranch,
 	sanitizeAuthorPrefix,
@@ -142,13 +147,17 @@ async function ensureMainWorkspace(project: Project): Promise<void> {
 	}
 
 	// Use the GitOperations interface to support both local and remote projects
-	const gitOps = resolveGitOps(project.remoteMachineId);
-	if (!gitOps) {
-		console.warn(
-			`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
-		);
-		return;
+	let sshConn: ReturnType<typeof getActiveConnection> | undefined;
+	if (project.remoteMachineId) {
+		sshConn = getActiveConnection(project.remoteMachineId);
+		if (!sshConn) {
+			console.warn(
+				`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
+			);
+			return;
+		}
 	}
+	const gitOps = resolveGitOps(sshConn);
 	const branch = await gitOps.getCurrentBranch(project.mainRepoPath);
 	if (!branch) {
 		console.warn(
@@ -363,28 +372,21 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						};
 					}
 
-					const git = simpleGit(project.mainRepoPath);
+					const gitOps = resolveGitOps();
 
-					let hasOrigin = false;
-					try {
-						const remotes = await git.getRemotes();
-						hasOrigin = remotes.some((r) => r.name === "origin");
-					} catch {}
+					const hasOrigin = await hasOriginRemote(
+						project.mainRepoPath,
+						gitOps,
+					);
 
-					const branchSummary = await git.branch(["-a"]);
+					const { local, remote } = await listBranches(
+						project.mainRepoPath,
+						undefined,
+						gitOps,
+					);
 
-					const localBranchSet = new Set<string>();
-					const remoteBranchSet = new Set<string>();
-
-					for (const name of Object.keys(branchSummary.branches)) {
-						if (name.startsWith("remotes/origin/")) {
-							if (name === "remotes/origin/HEAD") continue;
-							const remoteName = name.replace("remotes/origin/", "");
-							remoteBranchSet.add(remoteName);
-						} else {
-							localBranchSet.add(name);
-						}
-					}
+					const localBranchSet = new Set(local);
+					const remoteBranchSet = new Set(remote);
 
 					const branchMap = new Map<
 						string,
@@ -393,12 +395,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 					if (hasOrigin) {
 						try {
-							const remoteBranchInfo = await git.raw([
-								"for-each-ref",
-								"--sort=-committerdate",
-								"--format=%(refname:short) %(committerdate:unix)",
-								"refs/remotes/origin/",
-							]);
+							const remoteBranchInfo = await gitOps.raw(
+								project.mainRepoPath,
+								[
+									"for-each-ref",
+									"--sort=-committerdate",
+									"--format=%(refname:short) %(committerdate:unix)",
+									"refs/remotes/origin/",
+								],
+							);
 
 							for (const line of remoteBranchInfo.trim().split("\n")) {
 								if (!line) continue;
@@ -434,12 +439,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					}
 
 					try {
-						const localBranchInfo = await git.raw([
-							"for-each-ref",
-							"--sort=-committerdate",
-							"--format=%(refname:short) %(committerdate:unix)",
-							"refs/heads/",
-						]);
+						const localBranchInfo = await gitOps.raw(
+							project.mainRepoPath,
+							[
+								"for-each-ref",
+								"--sort=-committerdate",
+								"--format=%(refname:short) %(committerdate:unix)",
+								"refs/heads/",
+							],
+						);
 
 						for (const line of localBranchInfo.trim().split("\n")) {
 							if (!line) continue;
@@ -490,12 +498,13 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					// Sync with remote in case the default branch changed (e.g. master -> main)
 					const remoteDefaultBranch = await refreshDefaultBranch(
 						project.mainRepoPath,
+						gitOps,
 					);
 
 					const defaultBranch =
 						remoteDefaultBranch ||
 						project.defaultBranch ||
-						(await getDefaultBranch(project.mainRepoPath));
+						(await getDefaultBranch(project.mainRepoPath, gitOps));
 
 					if (defaultBranch !== project.defaultBranch) {
 						localDb
@@ -1147,9 +1156,13 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				let totalFailed = 0;
 				const registry = getWorkspaceRuntimeRegistry();
 				for (const workspace of projectWorkspaces) {
-					const terminal = registry.getForWorkspaceId(workspace.id).terminal;
-					const terminalResult = await terminal.killByWorkspaceId(workspace.id);
-					totalFailed += terminalResult.failed;
+					try {
+						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
+						const terminalResult = await terminal.killByWorkspaceId(workspace.id);
+						totalFailed += terminalResult.failed;
+					} catch (err) {
+						if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+					}
 				}
 
 				const closedWorkspaceIds = projectWorkspaces.map((w) => w.id);
@@ -1221,6 +1234,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 				if (!project) {
 					console.log("[getGitHubAvatar] Project not found:", input.id);
+					return null;
+				}
+
+				// Remote projects: no local git repo to run `gh` against
+				if (project.remoteMachineId) {
 					return null;
 				}
 
@@ -1303,6 +1321,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						code: "NOT_FOUND",
 						message: `Project ${input.id} not found`,
 					});
+				}
+
+				// Remote projects: no local repo to scan for icons
+				if (project.remoteMachineId) {
+					return { iconUrl: project.iconUrl ?? null };
 				}
 
 				// Skip if the project already has an icon

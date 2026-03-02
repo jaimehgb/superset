@@ -186,14 +186,19 @@ export class Session {
 
 		const { cwd, cols, rows, env } = options;
 
-		// In normal flow, caller provides a prebuilt terminal env.
-		// Fall back to process.env only if env was omitted.
-		const envSource = env ?? (process.env as Record<string, string>);
-		const processEnv = buildSafeEnv(envSource);
+		// Always start with the daemon's own process.env (filtered to safe
+		// vars), then overlay client-provided env. This ensures remote sessions
+		// get the remote machine's SHELL, PATH, HOME etc. while still receiving
+		// Superset metadata vars from the client.
+		const baseEnv = buildSafeEnv(process.env as Record<string, string>);
+		const processEnv = env ? { ...baseEnv, ...env } : baseEnv;
 		processEnv.TERM = "xterm-256color";
 
 		const shellArgs = getShellArgs(this.shell);
-		const subprocessPath = path.join(__dirname, "pty-subprocess.js");
+		// SUPERSET_DAEMON_DIR is set by the provisioner when starting the remote
+		// daemon. Locally (Electron/Vite), __dirname resolves correctly.
+		const daemonDir = process.env.SUPERSET_DAEMON_DIR ?? __dirname;
+		const subprocessPath = path.join(daemonDir, "pty-subprocess.js");
 
 		// Spawn subprocess with filtered env to prevent leaking NODE_ENV etc.
 		const electronPath = process.execPath;
@@ -935,7 +940,7 @@ export class Session {
 		if (process.platform === "win32") {
 			return process.env.COMSPEC || "cmd.exe";
 		}
-		return process.env.SHELL || "/bin/zsh";
+		return process.env.SHELL || "/bin/sh";
 	}
 }
 

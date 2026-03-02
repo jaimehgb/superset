@@ -13,6 +13,7 @@
  * - Local + remote workspaces can coexist in the same process
  */
 
+import { RemoteRuntimeNotConnectedError } from "./errors";
 import { LocalWorkspaceRuntime } from "./local";
 import { RemoteWorkspaceRuntime } from "./remote";
 import type {
@@ -42,7 +43,8 @@ class DefaultWorkspaceRuntimeRegistry implements WorkspaceRuntimeRegistry {
 	 *
 	 * If a project machine lookup has been set, checks the workspace's project
 	 * for a remoteMachineId and returns the corresponding remote runtime if
-	 * registered. Otherwise falls back to the default local runtime.
+	 * registered. Throws RemoteRuntimeNotConnectedError if the workspace has
+	 * a remote machine assigned but it is not connected.
 	 */
 	getForWorkspaceId(workspaceId: string): WorkspaceRuntime {
 		if (this.projectMachineLookup) {
@@ -50,6 +52,7 @@ class DefaultWorkspaceRuntimeRegistry implements WorkspaceRuntimeRegistry {
 			if (machineId) {
 				const remote = this.remoteRuntimes.get(machineId);
 				if (remote) return remote;
+				throw new RemoteRuntimeNotConnectedError(machineId);
 			}
 		}
 		return this.getDefault();

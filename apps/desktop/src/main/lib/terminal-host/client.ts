@@ -667,6 +667,10 @@ export class TerminalHostClient extends EventEmitter {
 	private handleDisconnect(): void {
 		if (this.disconnectArmed) return;
 		this.disconnectArmed = true;
+		console.warn(
+			`[TerminalHostClient] handleDisconnect: socketPath=${this.socketPath} controlAlive=${!!this.controlSocket && !this.controlSocket.destroyed} streamAlive=${!!this.streamSocket && !this.streamSocket.destroyed}`,
+		);
+		console.trace("[TerminalHostClient] Disconnect stack trace");
 		this.resetConnectionState({ emitDisconnected: true });
 	}
 
