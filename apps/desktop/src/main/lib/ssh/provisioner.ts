@@ -10,6 +10,21 @@ import {
 	REMOTE_VERSION_FILE,
 } from "./types";
 
+/**
+ * Local directory containing the pre-built remote daemon bundle.
+ * Produced by `scripts/package-remote-daemon.ts`.
+ * Must match REMOTE_DAEMON_OUTPUT_DIR in that script.
+ */
+const DAEMON_BUNDLE_DIR = join(
+	__dirname,
+	"..",
+	"..",
+	"..",
+	"..",
+	"dist",
+	"remote-daemon",
+);
+
 /** Bump when the set of provisioned files changes. */
 const PROVISION_VERSION = "1";
 
@@ -156,6 +171,48 @@ export class RemoteProvisioner {
 			"Remote terminal-host daemon failed to start within 5 seconds. " +
 				`Check ~/${REMOTE_SUPERSET_DIR}/terminal-host.log on the remote machine for details.`,
 		);
+	}
+
+	/**
+	 * Upload the pre-built terminal-host daemon bundle to the remote machine
+	 * and install native dependencies (node-pty, tree-kill).
+	 *
+	 * Files uploaded to `~/.superset/`:
+	 * - `terminal-host.js`  -- daemon entry point
+	 * - `pty-subprocess.js` -- PTY subprocess (spawned per session)
+	 * - `package.json`      -- for `npm install` of native deps
+	 *
+	 * After uploading, runs `npm install` in `~/.superset/` to compile
+	 * native addons for the remote machine's architecture.
+	 */
+	async provisionDaemon(): Promise<void> {
+		const sftp = await this.ssh.getSftpClient();
+		const remoteBase = `~/${REMOTE_SUPERSET_DIR}`;
+
+		try {
+			// Ensure remote directory exists
+			await this.ssh.exec(`mkdir -p ${remoteBase}`);
+
+			// Upload daemon bundle files
+			const filesToUpload = [
+				"terminal-host.js",
+				"pty-subprocess.js",
+				"package.json",
+			];
+
+			for (const file of filesToUpload) {
+				await this.uploadFile(
+					sftp,
+					join(DAEMON_BUNDLE_DIR, file),
+					`${remoteBase}/${file}`,
+				);
+			}
+
+			// Install native dependencies on the remote machine
+			await this.ssh.exec(`cd ${remoteBase} && npm install --production 2>&1`);
+		} finally {
+			sftp.end();
+		}
 	}
 
 	// ── Private helpers ───────────────────────────────────────────
