@@ -78,6 +78,9 @@ apps/streams/data/
 Caddyfile
 superset-dev-data/
 
+# Git worktrees
+.worktrees
+
 # Codex workspace config (track only shared config/symlinks; ignore runtime state)
 .codex/*
 !.codex/config.toml
