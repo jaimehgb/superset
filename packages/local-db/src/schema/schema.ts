@@ -7,6 +7,7 @@ import type {
 	FileOpenMode,
 	GitHubStatus,
 	GitStatus,
+	RemoteMachineStatus,
 	TerminalLinkBehavior,
 	TerminalPreset,
 	WorkspaceType,
@@ -44,6 +45,10 @@ export const projects = sqliteTable(
 		iconUrl: text("icon_url"),
 		neonProjectId: text("neon_project_id"),
 		defaultApp: text("default_app").$type<ExternalApp>(),
+		remoteMachineId: text("remote_machine_id").references(
+			() => remoteMachines.id,
+			{ onDelete: "set null" },
+		),
 	},
 	(table) => [
 		index("projects_main_repo_path_idx").on(table.mainRepoPath),
@@ -177,6 +182,7 @@ export const settings = sqliteTable("settings", {
 	showResourceMonitor: integer("show_resource_monitor", { mode: "boolean" }),
 	worktreeBaseDir: text("worktree_base_dir"),
 	openLinksInApp: integer("open_links_in_app", { mode: "boolean" }),
+	defaultRemoteMachineId: text("default_remote_machine_id"),
 	defaultEditor: text("default_editor").$type<ExternalApp>(),
 });
 
@@ -343,3 +349,33 @@ export const browserHistory = sqliteTable(
 
 export type InsertBrowserHistory = typeof browserHistory.$inferInsert;
 export type SelectBrowserHistory = typeof browserHistory.$inferSelect;
+
+/**
+ * Remote machines table - represents an SSH-accessible remote compute box
+ */
+export const remoteMachines = sqliteTable(
+	"remote_machines",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => uuidv4()),
+		name: text("name").notNull(),
+		host: text("host").notNull(),
+		port: integer("port").notNull().default(22),
+		username: text("username").notNull(),
+		identityFile: text("identity_file"),
+		projectsDir: text("projects_dir").notNull().default("~/projects"),
+		status: text("status")
+			.notNull()
+			.$type<RemoteMachineStatus>()
+			.default("unknown"),
+		lastSeenAt: integer("last_seen_at"),
+		createdAt: integer("created_at")
+			.notNull()
+			.$defaultFn(() => Date.now()),
+	},
+	(table) => [index("remote_machines_host_idx").on(table.host)],
+);
+
+export type InsertRemoteMachine = typeof remoteMachines.$inferInsert;
+export type SelectRemoteMachine = typeof remoteMachines.$inferSelect;
