@@ -15,6 +15,7 @@ import { and, desc, eq, inArray, isNull, not } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { track } from "main/lib/analytics";
+import { resolveGitOps } from "main/lib/git";
 import { RemoteGitOperations } from "main/lib/git/remote";
 import { localDb } from "main/lib/local-db";
 import {
@@ -140,21 +141,15 @@ async function ensureMainWorkspace(project: Project): Promise<void> {
 		return;
 	}
 
-	// For remote projects, get the branch via SSH instead of local simple-git
-	let branch: string | null;
-	if (project.remoteMachineId) {
-		const ssh = getActiveConnection(project.remoteMachineId);
-		if (!ssh) {
-			console.warn(
-				`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
-			);
-			return;
-		}
-		const remoteGit = new RemoteGitOperations(ssh);
-		branch = await remoteGit.getCurrentBranch(project.mainRepoPath);
-	} else {
-		branch = await getCurrentBranch(project.mainRepoPath);
+	// Use the GitOperations interface to support both local and remote projects
+	const gitOps = resolveGitOps(project.remoteMachineId);
+	if (!gitOps) {
+		console.warn(
+			`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
+		);
+		return;
 	}
+	const branch = await gitOps.getCurrentBranch(project.mainRepoPath);
 	if (!branch) {
 		console.warn(
 			`[ensureMainWorkspace] Could not determine current branch for project ${project.id}`,
