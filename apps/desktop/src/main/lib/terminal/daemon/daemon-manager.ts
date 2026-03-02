@@ -403,7 +403,7 @@ export class DaemonTerminalManager extends EventEmitter {
 						themeType,
 					})
 				: buildTerminalEnv({
-						shell: shell!,
+						shell: shell as string,
 						paneId,
 						tabId,
 						workspaceId,

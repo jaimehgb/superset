@@ -35,10 +35,22 @@ function findDaemonBundleDir(): string {
 	// Fallback: log all attempted paths for debugging
 	console.error("[provisioner] Cannot find daemon bundle. Tried:", candidates);
 	console.error("[provisioner] __dirname =", __dirname);
-	return candidates[0]!;
+	return candidates[0];
 }
 
-const DAEMON_BUNDLE_DIR = findDaemonBundleDir();
+let _daemonBundleDir: string | undefined;
+
+function getDaemonBundleDir(): string {
+	if (!_daemonBundleDir) {
+		_daemonBundleDir = findDaemonBundleDir();
+	}
+	return _daemonBundleDir;
+}
+
+/** Override the daemon bundle directory (for testing). */
+export function _setDaemonBundleDirForTest(dir: string): void {
+	_daemonBundleDir = dir;
+}
 
 /** Files that make up the daemon bundle. */
 const DAEMON_BUNDLE_FILES = [
@@ -54,7 +66,7 @@ const DAEMON_BUNDLE_FILES = [
 function computeDaemonBundleHash(): string {
 	const hash = createHash("sha256");
 	for (const file of DAEMON_BUNDLE_FILES) {
-		const filePath = join(DAEMON_BUNDLE_DIR, file);
+		const filePath = join(getDaemonBundleDir(), file);
 		if (existsSync(filePath)) {
 			hash.update(readFileSync(filePath));
 		}
@@ -265,11 +277,11 @@ export class RemoteProvisioner {
 	 * native addons for the remote machine's architecture.
 	 */
 	async provisionDaemon(): Promise<void> {
-		console.log("[provisioner] DAEMON_BUNDLE_DIR =", DAEMON_BUNDLE_DIR);
+		console.log("[provisioner] getDaemonBundleDir() =", getDaemonBundleDir());
 
 		// Verify local bundle exists
 		for (const file of DAEMON_BUNDLE_FILES) {
-			const localPath = join(DAEMON_BUNDLE_DIR, file);
+			const localPath = join(getDaemonBundleDir(), file);
 			if (!existsSync(localPath)) {
 				throw new Error(
 					`Daemon bundle file not found: ${localPath}. ` +
@@ -292,7 +304,7 @@ export class RemoteProvisioner {
 
 			// Upload daemon bundle files
 			for (const file of DAEMON_BUNDLE_FILES) {
-				const localPath = join(DAEMON_BUNDLE_DIR, file);
+				const localPath = join(getDaemonBundleDir(), file);
 				const remotePath = `${remoteBase}/${file}`;
 				console.log(`[provisioner] Uploading ${file}...`);
 				await this.uploadFile(sftp, localPath, remotePath);

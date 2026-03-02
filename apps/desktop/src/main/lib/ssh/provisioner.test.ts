@@ -8,10 +8,39 @@
  * 4. The upload uses the correct remote paths under ~/.superset/
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SFTPWrapper } from "ssh2";
 import type { SshConnectionManager } from "./connection-manager";
-import { RemoteProvisioner } from "./provisioner";
+import { _setDaemonBundleDirForTest, RemoteProvisioner } from "./provisioner";
+
+// Create a temporary directory with dummy bundle files so the provisioner
+// can validate local files exist (without requiring a real build step).
+const FIXTURE_DIR = join(
+	tmpdir(),
+	`superset-provisioner-test-${process.pid}`,
+	"remote-daemon",
+);
+
+beforeAll(() => {
+	mkdirSync(FIXTURE_DIR, { recursive: true });
+	writeFileSync(join(FIXTURE_DIR, "terminal-host.js"), "// stub");
+	writeFileSync(join(FIXTURE_DIR, "pty-subprocess.js"), "// stub");
+	writeFileSync(
+		join(FIXTURE_DIR, "package.json"),
+		'{"name":"stub","private":true}',
+	);
+	_setDaemonBundleDirForTest(FIXTURE_DIR);
+});
+
+afterAll(() => {
+	rmSync(join(tmpdir(), `superset-provisioner-test-${process.pid}`), {
+		recursive: true,
+		force: true,
+	});
+});
 
 // Track calls to verify behavior
 interface MockCall {
@@ -55,6 +84,9 @@ function createMockSsh(): {
 			}
 			if (cmd.includes("node --version")) {
 				return { stdout: "v20.11.0\n", stderr: "", code: 0 };
+			}
+			if (cmd.includes("echo $HOME")) {
+				return { stdout: "~\n", stderr: "", code: 0 };
 			}
 			return { stdout: "", stderr: "", code: 0 };
 		},

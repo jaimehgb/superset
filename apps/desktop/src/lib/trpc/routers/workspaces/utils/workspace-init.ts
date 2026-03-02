@@ -8,6 +8,7 @@ import type { WorkspaceInitStep } from "shared/types/workspace-init";
 import { getActiveConnection } from "../../remote-machines/connections";
 import { resolveWorkspaceBaseBranch } from "./base-branch";
 import { getBranchBaseConfig, setBranchBaseConfig } from "./base-branch-config";
+import { copySupersetConfigToWorktree } from "./setup";
 import {
 	branchExistsOnRemote,
 	createWorktree,
@@ -18,8 +19,7 @@ import {
 	refreshDefaultBranch,
 	removeWorktree,
 	sanitizeGitError,
-} from "./git";
-import { copySupersetConfigToWorktree } from "./setup";
+} from "./workspace-init-git";
 
 export interface WorkspaceInitParams {
 	workspaceId: string;

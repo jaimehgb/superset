@@ -67,11 +67,9 @@ mock.module("main/lib/analytics", () => ({
 	track: mock(() => {}),
 }));
 
-// Mock base-branch utils
-mock.module("./base-branch", () => ({
-	resolveWorkspaceBaseBranch: mock(() => "main"),
-}));
-
+// Mock base-branch-config (don't mock ./base-branch — the real function
+// returns "main" with null workspaceBaseBranch + "main" defaultBranch,
+// and mocking it globally pollutes base-branch.test.ts)
 mock.module("./base-branch-config", () => ({
 	getBranchBaseConfig: mock(async () => ({
 		baseBranch: null,
@@ -99,7 +97,7 @@ const mockCreateWorktreeFromExistingBranch = mock(async () => {});
 const mockRemoveWorktree = mock(async () => {});
 const mockSanitizeGitError = mock((msg: string) => msg);
 
-mock.module("./git", () => ({
+mock.module("./workspace-init-git", () => ({
 	refreshDefaultBranch: mockRefreshDefaultBranch,
 	hasOriginRemote: mockHasOriginRemote,
 	branchExistsOnRemote: mockBranchExistsOnRemote,
@@ -311,7 +309,7 @@ describe("initializeWorkspaceWorktree", () => {
 
 			const calls = mockRemoteGitOps.worktreeAdd.mock.calls as unknown[][];
 			expect(calls.length).toBeGreaterThan(0);
-			const callArgs = calls[0]!;
+			const callArgs = calls[0] as unknown[];
 			// First arg is mainRepoPath
 			expect(callArgs[0]).toBe("/local/repos/my-project");
 			// Second arg is worktree path

@@ -124,6 +124,7 @@ export class SshConnectionManager extends EventEmitter {
 		// the command's stdout with shell init noise.
 		const envPreamble = [
 			". ~/.bashrc >/dev/null 2>&1",
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, not JS template
 			'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
 			'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1',
 			'command -v fnm >/dev/null 2>&1 && eval "$(fnm env 2>/dev/null)" >/dev/null 2>&1',
