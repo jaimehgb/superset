@@ -10,7 +10,11 @@ import {
 	type TerminalHostClient,
 } from "../../terminal-host/client";
 import type { ListSessionsResponse } from "../../terminal-host/types";
-import { buildRemoteMetadataEnv, buildTerminalEnv, getDefaultShell } from "../env";
+import {
+	buildRemoteMetadataEnv,
+	buildTerminalEnv,
+	getDefaultShell,
+} from "../env";
 import { TerminalKilledError } from "../errors";
 import { portManager } from "../port-manager";
 import type { CreateSessionParams, SessionResult } from "../types";
@@ -45,7 +49,10 @@ export class DaemonTerminalManager extends EventEmitter {
 	 *  should come from the daemon's own process.env, not the local Electron. */
 	private readonly isRemote: boolean;
 
-	constructor(injectedClient?: TerminalHostClient, opts?: { remote?: boolean }) {
+	constructor(
+		injectedClient?: TerminalHostClient,
+		opts?: { remote?: boolean },
+	) {
 		super();
 		this.isRemote = opts?.remote ?? false;
 		this.initializeClient(injectedClient);

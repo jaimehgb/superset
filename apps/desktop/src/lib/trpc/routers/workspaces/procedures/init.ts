@@ -1,16 +1,16 @@
 import { workspaces, worktrees } from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
 import { eq } from "drizzle-orm";
+import { resolveGitOps } from "main/lib/git";
 import { localDb } from "main/lib/local-db";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import type { WorkspaceInitProgress } from "shared/types/workspace-init";
 import { deduplicateBranchName } from "shared/utils/branch";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
+import { getActiveConnection } from "../../remote-machines";
 import { getPresetsForTrigger } from "../../settings";
 import { getProject, getWorkspaceWithRelations } from "../utils/db-helpers";
-import { resolveGitOps } from "main/lib/git";
-import { getActiveConnection } from "../../remote-machines";
 import { listBranches } from "../utils/git";
 import { resolveWorktreePath } from "../utils/resolve-worktree-path";
 import { loadSetupConfig } from "../utils/setup";
@@ -98,7 +98,11 @@ async function resolveRetryTarget({
 		);
 	}
 	const gitOps = resolveGitOps(sshConn);
-	const { local, remote } = await listBranches(project.mainRepoPath, undefined, gitOps);
+	const { local, remote } = await listBranches(
+		project.mainRepoPath,
+		undefined,
+		gitOps,
+	);
 	const deduplicatedBranch = deduplicateBranchName(currentBranch, [
 		...local,
 		...remote,

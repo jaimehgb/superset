@@ -13,18 +13,12 @@ export interface GitOperations {
 		worktreePath: string,
 		args: string[],
 	): Promise<void>;
-	worktreeRemove(
-		mainRepoPath: string,
-		worktreePath: string,
-	): Promise<void>;
+	worktreeRemove(mainRepoPath: string, worktreePath: string): Promise<void>;
 
 	// ─── Branch queries ──────────────────────────────────────────
 	getCurrentBranch(repoPath: string): Promise<string | null>;
 	getDefaultBranch(mainRepoPath: string): Promise<string>;
-	branchExistsOnRemote(
-		repoPath: string,
-		branch: string,
-	): Promise<boolean>;
+	branchExistsOnRemote(repoPath: string, branch: string): Promise<boolean>;
 	listBranches(
 		repoPath: string,
 		options?: { fetch?: boolean },
@@ -40,18 +34,9 @@ export interface GitOperations {
 	status(repoPath: string): Promise<StatusResult>;
 
 	// ─── Fetch / sync ────────────────────────────────────────────
-	fetch(
-		repoPath: string,
-		remote?: string,
-		branch?: string,
-	): Promise<void>;
-	refreshDefaultBranch(
-		repoPath: string,
-	): Promise<string | null>;
-	fetchDefaultBranch(
-		repoPath: string,
-		defaultBranch: string,
-	): Promise<string>;
+	fetch(repoPath: string, remote?: string, branch?: string): Promise<void>;
+	refreshDefaultBranch(repoPath: string): Promise<string | null>;
+	fetchDefaultBranch(repoPath: string, defaultBranch: string): Promise<string>;
 	getAheadBehindCount(
 		repoPath: string,
 		defaultBranch: string,

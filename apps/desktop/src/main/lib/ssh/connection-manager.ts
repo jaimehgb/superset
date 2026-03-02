@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import net from "node:net";
 import type { SFTPWrapper } from "ssh2";
 import { Client } from "ssh2";
 import type {

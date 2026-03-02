@@ -196,8 +196,7 @@ export const createRemoteMachinesRouter = () => {
 						hooksPort: input.hooksPort,
 					});
 				} catch (err) {
-					const errMsg =
-						err instanceof Error ? err.message : String(err);
+					const errMsg = err instanceof Error ? err.message : String(err);
 					throw new TRPCError({
 						code: "INTERNAL_SERVER_ERROR",
 						message: `Failed to connect: ${errMsg}`,

@@ -211,8 +211,7 @@ export default defineConfig({
 			strictPort: false,
 			proxy: {
 				"/api": {
-					target:
-						process.env.NEXT_PUBLIC_API_URL ?? "https://api.superset.sh",
+					target: process.env.NEXT_PUBLIC_API_URL ?? "https://api.superset.sh",
 					changeOrigin: true,
 					secure: true,
 				},

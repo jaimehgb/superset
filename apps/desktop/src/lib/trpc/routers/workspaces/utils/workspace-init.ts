@@ -566,11 +566,10 @@ async function initializeRemoteWorktree({
 
 		// For existing branches on remote, use worktreeAdd without creating a new branch.
 		// The remote worktreeAdd creates the worktree with the branch.
-		await gitOps.worktreeAdd(
-			mainRepoPath,
+		await gitOps.worktreeAdd(mainRepoPath, worktreePath, [
 			worktreePath,
-			[worktreePath, branch],
-		);
+			branch,
+		]);
 		manager.markWorktreeCreated(workspaceId);
 
 		if (manager.isCancellationRequested(workspaceId)) {
@@ -676,7 +675,12 @@ async function initializeRemoteWorktree({
 		"creating_worktree",
 		"Creating git worktree on remote...",
 	);
-	await gitOps.worktreeAdd(mainRepoPath, worktreePath, [worktreePath, "-b", branch, startPoint]);
+	await gitOps.worktreeAdd(mainRepoPath, worktreePath, [
+		worktreePath,
+		"-b",
+		branch,
+		startPoint,
+	]);
 	manager.markWorktreeCreated(workspaceId);
 
 	if (manager.isCancellationRequested(workspaceId)) {

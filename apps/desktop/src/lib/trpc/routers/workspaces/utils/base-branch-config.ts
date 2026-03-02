@@ -35,9 +35,7 @@ export async function getBranchBaseConfig({
 	gitOps = defaultGitOps,
 }: BranchConfigParams): Promise<BranchBaseConfig> {
 	const [baseOutput, explicitOutput] = await Promise.all([
-		gitOps
-			.configGet(repoPath, `branch.${branch}.base`)
-			.catch(() => ""),
+		gitOps.configGet(repoPath, `branch.${branch}.base`).catch(() => ""),
 		gitOps
 			.raw(repoPath, ["config", "--bool", `branch.${branch}.base-explicit`])
 			.catch(() => ""),
@@ -61,12 +59,7 @@ export async function setBranchBaseConfig({
 		.catch(() => {});
 	if (isExplicit) {
 		await gitOps
-			.configSet(
-				repoPath,
-				`branch.${branch}.base-explicit`,
-				"true",
-				["--bool"],
-			)
+			.configSet(repoPath, `branch.${branch}.base-explicit`, "true", ["--bool"])
 			.catch(() => {});
 		return;
 	}
@@ -82,9 +75,7 @@ export async function unsetBranchBaseConfig({
 	gitOps = defaultGitOps,
 }: BranchConfigParams): Promise<void> {
 	await Promise.all([
-		gitOps
-			.configUnset(repoPath, `branch.${branch}.base`)
-			.catch(() => {}),
+		gitOps.configUnset(repoPath, `branch.${branch}.base`).catch(() => {}),
 		gitOps
 			.configUnset(repoPath, `branch.${branch}.base-explicit`)
 			.catch(() => {}),

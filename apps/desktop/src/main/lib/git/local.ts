@@ -109,12 +109,7 @@ export class LocalGitOperations implements GitOperations {
 	): Promise<boolean> {
 		const git = simpleGit(repoPath);
 		try {
-			const result = await git.raw([
-				"ls-remote",
-				"--heads",
-				"origin",
-				branch,
-			]);
+			const result = await git.raw(["ls-remote", "--heads", "origin", branch]);
 			return result.trim().length > 0;
 		} catch {
 			return false;
@@ -153,12 +148,7 @@ export class LocalGitOperations implements GitOperations {
 	async refExistsLocally(repoPath: string, ref: string): Promise<boolean> {
 		const git = simpleGit(repoPath);
 		try {
-			await git.raw([
-				"rev-parse",
-				"--verify",
-				"--quiet",
-				`${ref}^{commit}`,
-			]);
+			await git.raw(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
 			return true;
 		} catch {
 			return false;

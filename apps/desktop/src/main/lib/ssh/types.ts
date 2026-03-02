@@ -1,5 +1,3 @@
-import type { Client as Ssh2Client, ConnectConfig } from "ssh2";
-
 export interface SshMachineConfig {
 	id: string;
 	name: string;

@@ -19,7 +19,7 @@ export function useAdoptRemoteSessions(workspaceId: string | undefined) {
 
 	const { data, isLoading } =
 		electronTrpc.terminal.listSessionsForWorkspace.useQuery(
-			{ workspaceId: workspaceId! },
+			{ workspaceId: workspaceId ?? "" },
 			{
 				enabled: !!workspaceId && hasNoTabs,
 			},

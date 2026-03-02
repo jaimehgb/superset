@@ -21,9 +21,7 @@ export class RemoteGitOperations implements GitOperations {
 
 	private async git(repoPath: string, args: string[]): Promise<string> {
 		const escaped = args.map((a) => this.shellEscape(a)).join(" ");
-		return this.exec(
-			`git -C ${this.shellEscape(repoPath)} ${escaped}`,
-		);
+		return this.exec(`git -C ${this.shellEscape(repoPath)} ${escaped}`);
 	}
 
 	private shellEscape(s: string): string {
@@ -243,11 +241,7 @@ export class RemoteGitOperations implements GitOperations {
 	async status(repoPath: string): Promise<StatusResult> {
 		// Return a minimal StatusResult from porcelain output.
 		// For remote, we parse the raw status ourselves.
-		const output = await this.git(repoPath, [
-			"status",
-			"--porcelain=v1",
-			"-b",
-		]);
+		const output = await this.git(repoPath, ["status", "--porcelain=v1", "-b"]);
 
 		const files: StatusResult["files"] = [];
 		let current: string | null = null;
@@ -257,9 +251,7 @@ export class RemoteGitOperations implements GitOperations {
 			if (!line) continue;
 			if (line.startsWith("## ")) {
 				const branchInfo = line.slice(3);
-				const trackingMatch = branchInfo.match(
-					/^(.+?)\.\.\.(.+?)(?:\s|$)/,
-				);
+				const trackingMatch = branchInfo.match(/^(.+?)\.\.\.(.+?)(?:\s|$)/);
 				if (trackingMatch) {
 					current = trackingMatch[1];
 					tracking = trackingMatch[2].split(" ")[0] || null;
@@ -330,9 +322,7 @@ export class RemoteGitOperations implements GitOperations {
 					"origin",
 					"HEAD",
 				]);
-				const symrefMatch = result.match(
-					/ref:\s+refs\/heads\/(.+?)\tHEAD/,
-				);
+				const symrefMatch = result.match(/ref:\s+refs\/heads\/(.+?)\tHEAD/);
 				if (symrefMatch) return symrefMatch[1];
 			} catch {}
 		}

@@ -350,9 +350,7 @@ export class TerminalHostClient extends EventEmitter {
 			let controlConnected = await this.tryConnectControl();
 			if (!controlConnected) {
 				if (this.options.skipSpawn) {
-					throw new Error(
-						"Remote daemon not running and skipSpawn is true",
-					);
+					throw new Error("Remote daemon not running and skipSpawn is true");
 				}
 				await this.spawnDaemon();
 				controlConnected = await this.tryConnectControl();

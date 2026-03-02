@@ -1,10 +1,12 @@
 import { projects, settings, workspaces, worktrees } from "@superset/local-db";
 import { and, eq, isNull, not } from "drizzle-orm";
 import { track } from "main/lib/analytics";
+import { resolveGitOps } from "main/lib/git";
 import { localDb } from "main/lib/local-db";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
+import { getActiveConnection } from "../../remote-machines";
 import { resolveWorkspaceBaseBranch } from "../utils/base-branch";
 import { setBranchBaseConfig } from "../utils/base-branch-config";
 import {
@@ -23,7 +25,6 @@ import {
 	generateBranchName,
 	getBranchPrefix,
 	getBranchWorktreePath,
-	getCurrentBranch,
 	getPrInfo,
 	getPrLocalBranchName,
 	listBranches,
@@ -35,8 +36,6 @@ import {
 	sanitizeBranchNameWithMaxLength,
 	worktreeExists,
 } from "../utils/git";
-import { resolveGitOps } from "main/lib/git";
-import { getActiveConnection } from "../../remote-machines";
 import { resolveWorktreePath } from "../utils/resolve-worktree-path";
 import { copySupersetConfigToWorktree, loadSetupConfig } from "../utils/setup";
 import { initializeWorkspaceWorktree } from "../utils/workspace-init";
@@ -339,7 +338,11 @@ export const createCreateProcedures = () => {
 					}
 				}
 
-				const { local, remote } = await listBranches(project.mainRepoPath, undefined, gitOps);
+				const { local, remote } = await listBranches(
+					project.mainRepoPath,
+					undefined,
+					gitOps,
+				);
 				const existingBranches = [...local, ...remote];
 
 				let branchPrefix: string | undefined;
@@ -550,7 +553,8 @@ export const createCreateProcedures = () => {
 					);
 				}
 				const gitOps = resolveGitOps(sshConn);
-				branch = input.branch || (await gitOps.getCurrentBranch(project.mainRepoPath));
+				branch =
+					input.branch || (await gitOps.getCurrentBranch(project.mainRepoPath));
 				if (!branch) {
 					throw new Error("Could not determine current branch");
 				}
@@ -865,7 +869,10 @@ export const createCreateProcedures = () => {
 					};
 				}
 
-				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath, gitOpsExt);
+				const knownBranches = await getKnownBranchesSafe(
+					project.mainRepoPath,
+					gitOpsExt,
+				);
 				const baseBranch = resolveWorkspaceBaseBranch({
 					workspaceBaseBranch: project.workspaceBaseBranch,
 					defaultBranch: project.defaultBranch,
@@ -1015,7 +1022,10 @@ export const createCreateProcedures = () => {
 				}
 				const gitOpsImport = resolveGitOps(sshConnImport);
 
-				const knownBranches = await getKnownBranchesSafe(project.mainRepoPath, gitOpsImport);
+				const knownBranches = await getKnownBranchesSafe(
+					project.mainRepoPath,
+					gitOpsImport,
+				);
 				const baseBranch = resolveWorkspaceBaseBranch({
 					workspaceBaseBranch: project.workspaceBaseBranch,
 					defaultBranch: project.defaultBranch,
@@ -1045,7 +1055,11 @@ export const createCreateProcedures = () => {
 
 					if (existingWorkspace) continue;
 
-					const exists = await worktreeExists(project.mainRepoPath, wt.path, gitOpsImport);
+					const exists = await worktreeExists(
+						project.mainRepoPath,
+						wt.path,
+						gitOpsImport,
+					);
 					if (!exists) continue;
 
 					const maxTabOrder = getMaxWorkspaceTabOrder(input.projectId);

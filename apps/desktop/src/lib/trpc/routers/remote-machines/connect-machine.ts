@@ -112,9 +112,7 @@ export async function connectMachine(
 		const elapsed = () => `${(performance.now() - t0).toFixed(0)}ms`;
 
 		// Step 1: SSH connect
-		console.log(
-			`[remote] Connecting to ${machine.host}:${machine.port}...`,
-		);
+		console.log(`[remote] Connecting to ${machine.host}:${machine.port}...`);
 		await ssh.connect();
 		console.log(`[remote] [${elapsed()}] SSH connected`);
 
@@ -153,7 +151,9 @@ export async function connectMachine(
 		const daemonRunning = probe.SOCK === "ready";
 		const remoteToken = probe.TOKEN || "missing";
 
-		console.log(`[remote] Probe: node=${nodeVersion} prov=${provVersion} daemon=${daemonVersion} sock=${daemonRunning ? "ready" : "stopped"}`);
+		console.log(
+			`[remote] Probe: node=${nodeVersion} prov=${provVersion} daemon=${daemonVersion} sock=${daemonRunning ? "ready" : "stopped"}`,
+		);
 
 		if (nodeVersion === "missing") {
 			throw new Error(
@@ -170,7 +170,8 @@ export async function connectMachine(
 		}
 
 		// Step 4: Upload daemon bundle if hash changed
-		const needsDaemon = provisioner.needsDaemonProvisioningForHash(daemonVersion);
+		const needsDaemon =
+			provisioner.needsDaemonProvisioningForHash(daemonVersion);
 		if (needsDaemon) {
 			console.log("[remote] Uploading daemon bundle...");
 			await provisioner.provisionDaemon();
@@ -191,10 +192,7 @@ export async function connectMachine(
 		// Step 6: Forward socket + copy token + reverse port forward (parallelized)
 		const remoteBase = `${remoteHome}/${supersetDir}`;
 		const remoteDaemonSocket = `${remoteBase}/${socketName}`;
-		const localSocketPath = join(
-			tmpdir(),
-			`spr-${machineId.slice(0, 8)}.sock`,
-		);
+		const localSocketPath = join(tmpdir(), `spr-${machineId.slice(0, 8)}.sock`);
 
 		console.log("[remote] Setting up forwarding...");
 		const forwardPromises: Promise<unknown>[] = [

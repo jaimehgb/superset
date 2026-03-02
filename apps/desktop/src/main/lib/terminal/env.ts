@@ -373,7 +373,15 @@ export function buildRemoteMetadataEnv(params: {
 	rootPath?: string;
 	themeType?: "dark" | "light";
 }): Record<string, string> {
-	const { paneId, tabId, workspaceId, workspaceName, workspacePath, rootPath, themeType } = params;
+	const {
+		paneId,
+		tabId,
+		workspaceId,
+		workspaceName,
+		workspacePath,
+		rootPath,
+		themeType,
+	} = params;
 
 	const colorFgBg = themeType === "light" ? "0;15" : "15;0";
 

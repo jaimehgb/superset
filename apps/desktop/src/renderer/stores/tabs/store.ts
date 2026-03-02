@@ -313,9 +313,7 @@ export const useTabsStore = create<TabsStore>()(
 						panes: { ...state.panes, ...newPanes },
 						activeTabIds: {
 							...state.activeTabIds,
-							...(firstTabId
-								? { [workspaceId]: firstTabId }
-								: {}),
+							...(firstTabId ? { [workspaceId]: firstTabId } : {}),
 						},
 						focusedPaneIds: {
 							...state.focusedPaneIds,

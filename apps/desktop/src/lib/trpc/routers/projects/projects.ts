@@ -23,8 +23,8 @@ import {
 	saveProjectIconFromDataUrl,
 } from "main/lib/project-icons";
 import {
-	RemoteRuntimeNotConnectedError,
 	getWorkspaceRuntimeRegistry,
+	RemoteRuntimeNotConnectedError,
 } from "main/lib/workspace-runtime";
 import { PROJECT_COLOR_VALUES } from "shared/constants/project-colors";
 import simpleGit from "simple-git";
@@ -374,10 +374,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 					const gitOps = resolveGitOps();
 
-					const hasOrigin = await hasOriginRemote(
-						project.mainRepoPath,
-						gitOps,
-					);
+					const hasOrigin = await hasOriginRemote(project.mainRepoPath, gitOps);
 
 					const { local, remote } = await listBranches(
 						project.mainRepoPath,
@@ -395,15 +392,12 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 					if (hasOrigin) {
 						try {
-							const remoteBranchInfo = await gitOps.raw(
-								project.mainRepoPath,
-								[
-									"for-each-ref",
-									"--sort=-committerdate",
-									"--format=%(refname:short) %(committerdate:unix)",
-									"refs/remotes/origin/",
-								],
-							);
+							const remoteBranchInfo = await gitOps.raw(project.mainRepoPath, [
+								"for-each-ref",
+								"--sort=-committerdate",
+								"--format=%(refname:short) %(committerdate:unix)",
+								"refs/remotes/origin/",
+							]);
 
 							for (const line of remoteBranchInfo.trim().split("\n")) {
 								if (!line) continue;
@@ -439,15 +433,12 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					}
 
 					try {
-						const localBranchInfo = await gitOps.raw(
-							project.mainRepoPath,
-							[
-								"for-each-ref",
-								"--sort=-committerdate",
-								"--format=%(refname:short) %(committerdate:unix)",
-								"refs/heads/",
-							],
-						);
+						const localBranchInfo = await gitOps.raw(project.mainRepoPath, [
+							"for-each-ref",
+							"--sort=-committerdate",
+							"--format=%(refname:short) %(committerdate:unix)",
+							"refs/heads/",
+						]);
 
 						for (const line of localBranchInfo.trim().split("\n")) {
 							if (!line) continue;
@@ -713,9 +704,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 						// Resolve ~ to absolute path (shell-escaped paths suppress tilde expansion)
 						let resolvedProjectsDir = machine.projectsDir;
-						if (resolvedProjectsDir.startsWith("~/") || resolvedProjectsDir === "~") {
+						if (
+							resolvedProjectsDir.startsWith("~/") ||
+							resolvedProjectsDir === "~"
+						) {
 							const remoteHome = (await ssh.exec("echo $HOME")).stdout.trim();
-							resolvedProjectsDir = resolvedProjectsDir.replace(/^~/, remoteHome);
+							resolvedProjectsDir = resolvedProjectsDir.replace(
+								/^~/,
+								remoteHome,
+							);
 						}
 						const remoteClonePath = `${resolvedProjectsDir}/${repoName}`;
 
@@ -1158,7 +1155,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				for (const workspace of projectWorkspaces) {
 					try {
 						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
-						const terminalResult = await terminal.killByWorkspaceId(workspace.id);
+						const terminalResult = await terminal.killByWorkspaceId(
+							workspace.id,
+						);
 						totalFailed += terminalResult.failed;
 					} catch (err) {
 						if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;

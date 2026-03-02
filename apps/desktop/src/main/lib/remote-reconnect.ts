@@ -1,7 +1,9 @@
 import { remoteMachines } from "@superset/local-db";
 import { eq } from "drizzle-orm";
-import { connectMachine } from "lib/trpc/routers/remote-machines/connect-machine";
-import { updateMachineStatus } from "lib/trpc/routers/remote-machines/connect-machine";
+import {
+	connectMachine,
+	updateMachineStatus,
+} from "lib/trpc/routers/remote-machines/connect-machine";
 import { localDb } from "./local-db";
 
 /**

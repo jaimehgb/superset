@@ -1,8 +1,8 @@
+import { EventEmitter } from "node:events";
 import { projects, workspaces, worktrees } from "@superset/local-db";
 import { TRPCError } from "@trpc/server";
 import { observable } from "@trpc/server/observable";
 import { eq } from "drizzle-orm";
-import { EventEmitter } from "node:events";
 import { appState } from "main/lib/app-state";
 import { localDb } from "main/lib/local-db";
 import { restartDaemon as restartDaemonShared } from "main/lib/terminal";
@@ -13,12 +13,12 @@ import {
 import { getTerminalHostClient } from "main/lib/terminal-host/client";
 import type { TerminalRuntime } from "main/lib/workspace-runtime";
 import {
-	RemoteRuntimeNotConnectedError,
 	getWorkspaceRuntimeRegistry,
+	RemoteRuntimeNotConnectedError,
 } from "main/lib/workspace-runtime";
-import { connectMachine } from "../remote-machines/connect-machine";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
+import { connectMachine } from "../remote-machines/connect-machine";
 import { assertWorkspaceUsable } from "../workspaces/utils/usability";
 import { getWorkspacePath } from "../workspaces/utils/worktree";
 import { resolveTerminalThemeType } from "./theme-type";
@@ -413,8 +413,7 @@ export const createTerminalRouter = () => {
 			.query(async ({ input }) => {
 				try {
 					const runtime = registry.getForWorkspaceId(input.workspaceId);
-					const { sessions } =
-						await runtime.terminal.management.listSessions();
+					const { sessions } = await runtime.terminal.management.listSessions();
 					return {
 						sessions: sessions.filter(
 							(s) => s.workspaceId === input.workspaceId && s.isAlive,
@@ -499,9 +498,7 @@ export const createTerminalRouter = () => {
 			.mutation(async ({ input }) => {
 				let wsTerminal: TerminalRuntime;
 				try {
-					wsTerminal = registry.getForWorkspaceId(
-						input.workspaceId,
-					).terminal;
+					wsTerminal = registry.getForWorkspaceId(input.workspaceId).terminal;
 				} catch (err) {
 					if (err instanceof RemoteRuntimeNotConnectedError) {
 						return { killedCount: 0 };
@@ -623,10 +620,7 @@ export const createTerminalRouter = () => {
 							emit.next({ type: "disconnect", reason });
 						};
 
-						const onError = (payload: {
-							error: string;
-							code?: string;
-						}) => {
+						const onError = (payload: { error: string; code?: string }) => {
 							emit.next({
 								type: "error",
 								error: payload.error,
@@ -673,10 +667,7 @@ export const createTerminalRouter = () => {
 							console.log(`[Terminal Stream] Unsubscribe: ${paneId}`);
 						}
 						detachCurrent?.();
-						paneAssignmentEmitter.off(
-							`assigned:${paneId}`,
-							onAssigned,
-						);
+						paneAssignmentEmitter.off(`assigned:${paneId}`, onAssigned);
 					};
 				});
 			}),

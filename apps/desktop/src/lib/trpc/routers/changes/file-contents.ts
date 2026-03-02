@@ -83,8 +83,7 @@ export const createFileContentsRouter = () => {
 				if (isRemoteWorktree(input.worktreePath)) {
 					throw new TRPCError({
 						code: "PRECONDITION_FAILED",
-						message:
-							"File contents not available for remote projects",
+						message: "File contents not available for remote projects",
 					});
 				}
 

@@ -3,9 +3,9 @@ import { LocalGitOperations } from "./local";
 import { RemoteGitOperations } from "./remote";
 import type { GitOperations } from "./types";
 
-export type { GitOperations } from "./types";
 export { LocalGitOperations } from "./local";
 export { RemoteGitOperations } from "./remote";
+export type { GitOperations } from "./types";
 
 const localGitOps = new LocalGitOperations();
 

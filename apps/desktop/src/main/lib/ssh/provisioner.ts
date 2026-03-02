@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { SUPERSET_DIR_NAME } from "shared/constants";
 import type { SFTPWrapper } from "ssh2";
 import type { SshConnectionManager } from "./connection-manager";
@@ -33,10 +33,7 @@ function findDaemonBundleDir(): string {
 	}
 
 	// Fallback: log all attempted paths for debugging
-	console.error(
-		"[provisioner] Cannot find daemon bundle. Tried:",
-		candidates,
-	);
+	console.error("[provisioner] Cannot find daemon bundle. Tried:", candidates);
 	console.error("[provisioner] __dirname =", __dirname);
 	return candidates[0]!;
 }
@@ -307,7 +304,10 @@ export class RemoteProvisioner {
 			const npmResult = await this.ssh.exec(
 				`cd ${remoteBase} && npm install --production 2>&1`,
 			);
-			console.log("[provisioner] npm install:", npmResult.stdout.trim().split("\n").pop());
+			console.log(
+				"[provisioner] npm install:",
+				npmResult.stdout.trim().split("\n").pop(),
+			);
 
 			// Stamp daemon version so future connects can skip upload+install
 			const localHash = computeDaemonBundleHash();

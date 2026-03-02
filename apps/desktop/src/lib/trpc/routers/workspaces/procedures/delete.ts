@@ -4,8 +4,8 @@ import { track } from "main/lib/analytics";
 import { resolveGitOps } from "main/lib/git";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import {
-	RemoteRuntimeNotConnectedError,
 	getWorkspaceRuntimeRegistry,
+	RemoteRuntimeNotConnectedError,
 } from "main/lib/workspace-runtime";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
@@ -322,9 +322,7 @@ export const createDeleteProcedures = () => {
 								);
 							} catch (error) {
 								const msg =
-									error instanceof Error
-										? error.message
-										: String(error);
+									error instanceof Error ? error.message : String(error);
 								if (
 									!msg.includes("is not a working tree") &&
 									!msg.includes("No such file or directory")
@@ -627,9 +625,7 @@ export const createDeleteProcedures = () => {
 									);
 								} catch (error) {
 									const msg =
-										error instanceof Error
-											? error.message
-											: String(error);
+										error instanceof Error ? error.message : String(error);
 									if (
 										!msg.includes("is not a working tree") &&
 										!msg.includes("No such file or directory")
