@@ -75,6 +75,25 @@ const PID_PATH = join(SUPERSET_HOME_DIR, "terminal-host.pid");
 const SPAWN_LOCK_PATH = join(SUPERSET_HOME_DIR, "terminal-host.spawn.lock");
 const SCRIPT_MTIME_PATH = join(SUPERSET_HOME_DIR, "terminal-host.mtime");
 
+// =============================================================================
+// Client Options
+// =============================================================================
+
+export interface TerminalHostClientOptions {
+	/** Override socket path (default: ~/.superset/terminal-host.sock) */
+	socketPath?: string;
+	/** Override token path (default: ~/.superset/terminal-host.token) */
+	tokenPath?: string;
+	/** Override PID path (default: ~/.superset/terminal-host.pid) */
+	pidPath?: string;
+	/** Override spawn lock path (default: ~/.superset/terminal-host.spawn.lock) */
+	spawnLockPath?: string;
+	/** Override script mtime path (default: ~/.superset/terminal-host.mtime) */
+	scriptMtimePath?: string;
+	/** Skip spawning daemon if not running (for remote connections) */
+	skipSpawn?: boolean;
+}
+
 // Connection timeouts
 const CONNECT_TIMEOUT_MS = 5000;
 const SPAWN_WAIT_MS = 2000;
@@ -171,16 +190,36 @@ export class TerminalHostClient extends EventEmitter {
 	private disconnectArmed = false;
 	private clientId = randomUUID();
 
-	constructor() {
+	constructor(private readonly options: TerminalHostClientOptions = {}) {
 		super();
 		if (DEBUG_CLIENT) {
 			console.log("[TerminalHostClient] Initialized with paths:", {
 				SUPERSET_DIR_NAME,
 				SUPERSET_HOME_DIR,
-				SOCKET_PATH,
+				socketPath: this.socketPath,
 				NODE_ENV: process.env.NODE_ENV,
 			});
 		}
+	}
+
+	// ===========================================================================
+	// Path Getters (fall back to module-level defaults)
+	// ===========================================================================
+
+	private get socketPath(): string {
+		return this.options.socketPath ?? SOCKET_PATH;
+	}
+	private get tokenPath(): string {
+		return this.options.tokenPath ?? TOKEN_PATH;
+	}
+	private get pidPath(): string {
+		return this.options.pidPath ?? PID_PATH;
+	}
+	private get spawnLockPath(): string {
+		return this.options.spawnLockPath ?? SPAWN_LOCK_PATH;
+	}
+	private get scriptMtimePath(): string {
+		return this.options.scriptMtimePath ?? SCRIPT_MTIME_PATH;
 	}
 
 	// ===========================================================================
@@ -310,6 +349,11 @@ export class TerminalHostClient extends EventEmitter {
 
 			let controlConnected = await this.tryConnectControl();
 			if (!controlConnected) {
+				if (this.options.skipSpawn) {
+					throw new Error(
+						"Remote daemon not running and skipSpawn is true",
+					);
+				}
 				await this.spawnDaemon();
 				controlConnected = await this.tryConnectControl();
 				if (!controlConnected) {
@@ -373,11 +417,11 @@ export class TerminalHostClient extends EventEmitter {
 	 */
 	private isDaemonScriptStale(): boolean {
 		try {
-			if (!existsSync(SCRIPT_MTIME_PATH)) {
+			if (!existsSync(this.scriptMtimePath)) {
 				return false; // No mtime file = first run or manual cleanup
 			}
 
-			const savedMtime = readFileSync(SCRIPT_MTIME_PATH, "utf-8").trim();
+			const savedMtime = readFileSync(this.scriptMtimePath, "utf-8").trim();
 			const scriptPath = this.getDaemonScriptPath();
 
 			if (!existsSync(scriptPath)) {
@@ -402,17 +446,17 @@ export class TerminalHostClient extends EventEmitter {
 			}
 
 			const mtime = statSync(scriptPath).mtimeMs.toString();
-			writeFileSync(SCRIPT_MTIME_PATH, mtime, { mode: 0o600 });
+			writeFileSync(this.scriptMtimePath, mtime, { mode: 0o600 });
 		} catch {
 			// Best-effort
 		}
 	}
 
 	private killDaemonFromPidFile(): void {
-		if (!existsSync(PID_PATH)) return;
+		if (!existsSync(this.pidPath)) return;
 
 		try {
-			const raw = readFileSync(PID_PATH, "utf-8").trim();
+			const raw = readFileSync(this.pidPath, "utf-8").trim();
 			const pid = Number.parseInt(raw, 10);
 			if (!Number.isNaN(pid)) {
 				try {
@@ -428,12 +472,12 @@ export class TerminalHostClient extends EventEmitter {
 
 	private async tryConnectControl(): Promise<boolean> {
 		return new Promise((resolve) => {
-			if (!existsSync(SOCKET_PATH)) {
+			if (!existsSync(this.socketPath)) {
 				resolve(false);
 				return;
 			}
 
-			const socket = connect(SOCKET_PATH);
+			const socket = connect(this.socketPath);
 			let resolved = false;
 
 			const timeout = setTimeout(() => {
@@ -468,12 +512,12 @@ export class TerminalHostClient extends EventEmitter {
 
 	private async tryConnectStream(): Promise<boolean> {
 		return new Promise((resolve) => {
-			if (!existsSync(SOCKET_PATH)) {
+			if (!existsSync(this.socketPath)) {
 				resolve(false);
 				return;
 			}
 
-			const socket = connect(SOCKET_PATH);
+			const socket = connect(this.socketPath);
 			let resolved = false;
 
 			const timeout = setTimeout(() => {
@@ -673,11 +717,11 @@ export class TerminalHostClient extends EventEmitter {
 	}
 
 	private readAuthToken(): string {
-		if (!existsSync(TOKEN_PATH)) {
+		if (!existsSync(this.tokenPath)) {
 			throw new Error("Auth token not found - daemon may not be running");
 		}
 
-		return readFileSync(TOKEN_PATH, "utf-8").trim();
+		return readFileSync(this.tokenPath, "utf-8").trim();
 	}
 
 	private isProtocolMismatchError(error: unknown): boolean {
@@ -813,12 +857,12 @@ export class TerminalHostClient extends EventEmitter {
 	}: {
 		killSessions?: boolean;
 	} = {}): Promise<void> {
-		if (!existsSync(SOCKET_PATH)) return;
+		if (!existsSync(this.socketPath)) return;
 
 		const token = this.readAuthToken();
 
 		await new Promise<void>((resolve, reject) => {
-			const socket = connect(SOCKET_PATH);
+			const socket = connect(this.socketPath);
 			let settled = false;
 
 			const timeoutId = setTimeout(() => {
@@ -908,7 +952,7 @@ export class TerminalHostClient extends EventEmitter {
 		const timeoutMs = 2000;
 
 		while (Date.now() - startTime < timeoutMs) {
-			if (!existsSync(SOCKET_PATH)) return;
+			if (!existsSync(this.socketPath)) return;
 			const live = await this.isSocketLive();
 			if (!live) return;
 			await this.sleep(100);
@@ -925,12 +969,12 @@ export class TerminalHostClient extends EventEmitter {
 	 */
 	private isSocketLive(): Promise<boolean> {
 		return new Promise((resolve) => {
-			if (!existsSync(SOCKET_PATH)) {
+			if (!existsSync(this.socketPath)) {
 				resolve(false);
 				return;
 			}
 
-			const testSocket = connect(SOCKET_PATH);
+			const testSocket = connect(this.socketPath);
 			const timeout = setTimeout(() => {
 				testSocket.destroy();
 				resolve(false);
@@ -966,8 +1010,8 @@ export class TerminalHostClient extends EventEmitter {
 			}
 
 			// Check if lock exists and is recent (within timeout)
-			if (existsSync(SPAWN_LOCK_PATH)) {
-				const lockContent = readFileSync(SPAWN_LOCK_PATH, "utf-8").trim();
+			if (existsSync(this.spawnLockPath)) {
+				const lockContent = readFileSync(this.spawnLockPath, "utf-8").trim();
 				const lockTime = Number.parseInt(lockContent, 10);
 				if (
 					!Number.isNaN(lockTime) &&
@@ -977,11 +1021,11 @@ export class TerminalHostClient extends EventEmitter {
 					return false;
 				}
 				// Stale lock, remove it
-				unlinkSync(SPAWN_LOCK_PATH);
+				unlinkSync(this.spawnLockPath);
 			}
 
 			// Create lock file with current timestamp
-			writeFileSync(SPAWN_LOCK_PATH, String(Date.now()), { mode: 0o600 });
+			writeFileSync(this.spawnLockPath, String(Date.now()), { mode: 0o600 });
 			return true;
 		} catch {
 			return false;
@@ -993,8 +1037,8 @@ export class TerminalHostClient extends EventEmitter {
 	 */
 	private releaseSpawnLock(): void {
 		try {
-			if (existsSync(SPAWN_LOCK_PATH)) {
-				unlinkSync(SPAWN_LOCK_PATH);
+			if (existsSync(this.spawnLockPath)) {
+				unlinkSync(this.spawnLockPath);
 			}
 		} catch {
 			// Best effort cleanup
@@ -1007,7 +1051,7 @@ export class TerminalHostClient extends EventEmitter {
 	private async spawnDaemon(): Promise<void> {
 		// Check if socket is live first - this is the authoritative check
 		// PID file can be stale if daemon crashed and PID was reused by another process
-		if (existsSync(SOCKET_PATH)) {
+		if (existsSync(this.socketPath)) {
 			const isLive = await this.isSocketLive();
 			if (isLive) {
 				if (DEBUG_CLIENT) {
@@ -1021,7 +1065,7 @@ export class TerminalHostClient extends EventEmitter {
 				console.log("[TerminalHostClient] Removing stale socket file");
 			}
 			try {
-				unlinkSync(SOCKET_PATH);
+				unlinkSync(this.socketPath);
 			} catch {
 				// Ignore - might not have permission
 			}
@@ -1029,12 +1073,12 @@ export class TerminalHostClient extends EventEmitter {
 
 		// Also clean up stale PID file if socket was not live
 		// This handles the case where daemon crashed and PID was reused
-		if (existsSync(PID_PATH)) {
+		if (existsSync(this.pidPath)) {
 			if (DEBUG_CLIENT) {
 				console.log("[TerminalHostClient] Removing stale PID file");
 			}
 			try {
-				unlinkSync(PID_PATH);
+				unlinkSync(this.pidPath);
 			} catch {
 				// Ignore - might not have permission
 			}
@@ -1175,7 +1219,7 @@ export class TerminalHostClient extends EventEmitter {
 		const startTime = Date.now();
 
 		while (Date.now() - startTime < SPAWN_WAIT_MS) {
-			if (existsSync(SOCKET_PATH)) {
+			if (existsSync(this.socketPath)) {
 				// Give it a moment to start listening
 				await this.sleep(200);
 				return;
