@@ -18,6 +18,7 @@ export type SettingsSection =
 	| "devices"
 	| "apikeys"
 	| "permissions"
+	| "remote-compute"
 	| "project";
 
 interface SettingsState {

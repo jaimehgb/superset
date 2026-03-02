@@ -9,6 +9,7 @@ import {
 	HiOutlineKey,
 	HiOutlinePaintBrush,
 	HiOutlinePuzzlePiece,
+	HiOutlineServerStack,
 	HiOutlineShieldCheck,
 	HiOutlineSparkles,
 	HiOutlineUser,
@@ -33,7 +34,8 @@ type SettingsRoute =
 	| "/settings/billing"
 	| "/settings/devices"
 	| "/settings/api-keys"
-	| "/settings/permissions";
+	| "/settings/permissions"
+	| "/settings/remote-compute";
 
 const GENERAL_SECTIONS: {
 	id: SettingsRoute;
@@ -89,6 +91,12 @@ const GENERAL_SECTIONS: {
 		section: "integrations",
 		label: "Integrations",
 		icon: <HiOutlinePuzzlePiece className="h-4 w-4" />,
+	},
+	{
+		id: "/settings/remote-compute",
+		section: "remote-compute",
+		label: "Remote Compute",
+		icon: <HiOutlineServerStack className="h-4 w-4" />,
 	},
 	{
 		id: "/settings/billing",

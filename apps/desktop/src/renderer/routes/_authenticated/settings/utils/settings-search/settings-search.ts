@@ -55,6 +55,11 @@ export const SETTING_ITEM_ID = {
 	API_KEYS_LIST: "api-keys-list",
 	API_KEYS_GENERATE: "api-keys-generate",
 
+	// Remote Compute
+	REMOTE_COMPUTE_MACHINES: "remote-compute-machines",
+	REMOTE_COMPUTE_TEST_CONNECTION: "remote-compute-test-connection",
+	REMOTE_COMPUTE_CONNECT: "remote-compute-connect",
+
 	// Permissions
 	PERMISSIONS_FULL_DISK_ACCESS: "permissions-full-disk-access",
 	PERMISSIONS_ACCESSIBILITY: "permissions-accessibility",
@@ -785,6 +790,56 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 			"mcp",
 			"claude desktop",
 			"claude code",
+		],
+	},
+	// Remote Compute
+	{
+		id: SETTING_ITEM_ID.REMOTE_COMPUTE_MACHINES,
+		section: "remote-compute",
+		title: "Remote Machines",
+		description: "Configure and manage remote SSH machines for compute",
+		keywords: [
+			"remote",
+			"compute",
+			"ssh",
+			"machine",
+			"server",
+			"host",
+			"connection",
+			"cloud",
+			"devbox",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.REMOTE_COMPUTE_TEST_CONNECTION,
+		section: "remote-compute",
+		title: "Test Connection",
+		description:
+			"Test SSH connectivity and Node.js availability on remote machines",
+		keywords: [
+			"remote",
+			"test",
+			"connection",
+			"ssh",
+			"verify",
+			"ping",
+			"node",
+			"check",
+		],
+	},
+	{
+		id: SETTING_ITEM_ID.REMOTE_COMPUTE_CONNECT,
+		section: "remote-compute",
+		title: "Connect / Disconnect",
+		description: "Manage connections to remote machines",
+		keywords: [
+			"remote",
+			"connect",
+			"disconnect",
+			"status",
+			"online",
+			"offline",
+			"session",
 		],
 	},
 	{
