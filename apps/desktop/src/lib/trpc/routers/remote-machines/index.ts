@@ -26,21 +26,12 @@ import {
 // Module-level State
 // =============================================================================
 
-/**
- * Active SSH connections keyed by machine ID.
- * These persist for the lifetime of the main process.
- */
-const activeConnections = new Map<string, SshConnectionManager>();
+// Connection state is extracted into a separate module so that other code
+// (e.g., workspace-init) can import `getActiveConnection` without pulling in
+// heavy tRPC / provisioner dependencies.
+import { activeConnections } from "./connections";
 
-/**
- * Retrieve the active SSH connection for a given machine ID.
- * Returns undefined if the machine is not currently connected.
- */
-export function getActiveConnection(
-	machineId: string,
-): SshConnectionManager | undefined {
-	return activeConnections.get(machineId);
-}
+export { getActiveConnection } from "./connections";
 
 // =============================================================================
 // Helpers

@@ -1,9 +1,11 @@
 import { projects, worktrees } from "@superset/local-db";
 import { eq } from "drizzle-orm";
 import { track } from "main/lib/analytics";
+import { RemoteGitOperations } from "main/lib/git/remote";
 import { localDb } from "main/lib/local-db";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import type { WorkspaceInitStep } from "shared/types/workspace-init";
+import { getActiveConnection } from "../../remote-machines/connections";
 import { resolveWorkspaceBaseBranch } from "./base-branch";
 import { getBranchBaseConfig, setBranchBaseConfig } from "./base-branch-config";
 import {
@@ -65,6 +67,22 @@ export async function initializeWorkspaceWorktree({
 			.from(projects)
 			.where(eq(projects.id, projectId))
 			.get();
+
+		// If the project is remote, delegate to the remote initialization flow
+		if (project?.remoteMachineId) {
+			await initializeRemoteWorktree({
+				workspaceId,
+				projectId,
+				worktreeId,
+				worktreePath,
+				branch,
+				mainRepoPath,
+				remoteMachineId: project.remoteMachineId,
+				project,
+				useExistingBranch,
+			});
+			return;
+		}
 
 		const { baseBranch: gitConfigBase, isExplicit: baseBranchWasExplicit } =
 			await getBranchBaseConfig({
@@ -484,4 +502,221 @@ export async function initializeWorkspaceWorktree({
 		manager.finalizeJob(workspaceId);
 		manager.releaseProjectLock(projectId);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Remote worktree initialization
+// ---------------------------------------------------------------------------
+
+/**
+ * Initializes a workspace worktree on a remote machine via SSH.
+ * Uses RemoteGitOperations to execute git commands on the remote host.
+ */
+async function initializeRemoteWorktree({
+	workspaceId,
+	projectId,
+	worktreeId,
+	worktreePath,
+	branch,
+	mainRepoPath,
+	remoteMachineId,
+	project,
+	useExistingBranch,
+}: {
+	workspaceId: string;
+	projectId: string;
+	worktreeId: string;
+	worktreePath: string;
+	branch: string;
+	mainRepoPath: string;
+	remoteMachineId: string;
+	project: {
+		defaultBranch?: string | null;
+		workspaceBaseBranch?: string | null;
+	};
+	useExistingBranch?: boolean;
+}): Promise<void> {
+	const manager = workspaceInitManager;
+
+	// Get active SSH connection
+	const sshConnection = getActiveConnection(remoteMachineId);
+	if (!sshConnection) {
+		manager.updateProgress(
+			workspaceId,
+			"failed",
+			"Remote machine not connected",
+			`Cannot initialize workspace: the remote machine is not connected. Please connect to the machine and try again.`,
+		);
+		return;
+	}
+
+	const gitOps = new RemoteGitOperations(sshConnection);
+
+	const effectiveBaseBranch = resolveWorkspaceBaseBranch({
+		workspaceBaseBranch: project.workspaceBaseBranch,
+		defaultBranch: project.defaultBranch,
+	});
+
+	if (useExistingBranch) {
+		manager.updateProgress(
+			workspaceId,
+			"creating_worktree",
+			"Creating git worktree on remote...",
+		);
+
+		// For existing branches on remote, use worktreeAdd without creating a new branch.
+		// The remote worktreeAdd creates the worktree with the branch.
+		await gitOps.worktreeAdd(
+			mainRepoPath,
+			branch,
+			worktreePath,
+			`origin/${branch}`,
+		);
+		manager.markWorktreeCreated(workspaceId);
+
+		if (manager.isCancellationRequested(workspaceId)) {
+			try {
+				await gitOps.worktreeRemove(mainRepoPath, worktreePath);
+			} catch (e) {
+				console.error(
+					"[workspace-init] Failed to cleanup remote worktree after cancel:",
+					e,
+				);
+			}
+			return;
+		}
+
+		// Skip copySupersetConfigToWorktree for remote projects (local filesystem operation)
+
+		manager.updateProgress(workspaceId, "finalizing", "Finalizing setup...");
+		localDb
+			.update(worktrees)
+			.set({
+				gitStatus: {
+					branch,
+					needsRebase: false,
+					ahead: 0,
+					behind: 0,
+					lastRefreshed: Date.now(),
+				},
+			})
+			.where(eq(worktrees.id, worktreeId))
+			.run();
+
+		manager.updateProgress(workspaceId, "ready", "Ready");
+
+		track("workspace_initialized", {
+			workspace_id: workspaceId,
+			project_id: projectId,
+			branch,
+			base_branch: branch,
+			use_existing_branch: true,
+			remote: true,
+		});
+
+		return;
+	}
+
+	// --- New branch flow ---
+
+	manager.updateProgress(workspaceId, "syncing", "Syncing with remote...");
+	const remoteDefaultBranch = await gitOps.getDefaultBranch(mainRepoPath);
+
+	if (remoteDefaultBranch && remoteDefaultBranch !== project.defaultBranch) {
+		localDb
+			.update(projects)
+			.set({ defaultBranch: remoteDefaultBranch })
+			.where(eq(projects.id, projectId))
+			.run();
+	}
+
+	if (manager.isCancellationRequested(workspaceId)) {
+		return;
+	}
+
+	manager.updateProgress(
+		workspaceId,
+		"verifying",
+		"Verifying base branch on remote...",
+	);
+
+	const branchExists = await gitOps.branchExistsOnRemote(
+		mainRepoPath,
+		effectiveBaseBranch,
+	);
+
+	if (!branchExists) {
+		manager.updateProgress(
+			workspaceId,
+			"failed",
+			"Base branch not found",
+			`Branch "${effectiveBaseBranch}" does not exist on the remote. Please try again with a different base branch.`,
+		);
+		return;
+	}
+
+	const startPoint = `origin/${effectiveBaseBranch}`;
+
+	if (manager.isCancellationRequested(workspaceId)) {
+		return;
+	}
+
+	manager.updateProgress(
+		workspaceId,
+		"fetching",
+		"Fetching latest changes on remote...",
+	);
+	await gitOps.fetch(mainRepoPath, "origin", effectiveBaseBranch);
+
+	if (manager.isCancellationRequested(workspaceId)) {
+		return;
+	}
+
+	manager.updateProgress(
+		workspaceId,
+		"creating_worktree",
+		"Creating git worktree on remote...",
+	);
+	await gitOps.worktreeAdd(mainRepoPath, branch, worktreePath, startPoint);
+	manager.markWorktreeCreated(workspaceId);
+
+	if (manager.isCancellationRequested(workspaceId)) {
+		try {
+			await gitOps.worktreeRemove(mainRepoPath, worktreePath);
+		} catch (e) {
+			console.error(
+				"[workspace-init] Failed to cleanup remote worktree after cancel:",
+				e,
+			);
+		}
+		return;
+	}
+
+	// Skip copySupersetConfigToWorktree for remote projects (local filesystem operation)
+
+	manager.updateProgress(workspaceId, "finalizing", "Finalizing setup...");
+
+	localDb
+		.update(worktrees)
+		.set({
+			gitStatus: {
+				branch,
+				needsRebase: false,
+				ahead: 0,
+				behind: 0,
+				lastRefreshed: Date.now(),
+			},
+		})
+		.where(eq(worktrees.id, worktreeId))
+		.run();
+
+	manager.updateProgress(workspaceId, "ready", "Ready");
+
+	track("workspace_initialized", {
+		workspace_id: workspaceId,
+		project_id: projectId,
+		branch,
+		base_branch: effectiveBaseBranch,
+		remote: true,
+	});
 }
