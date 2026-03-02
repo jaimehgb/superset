@@ -12,7 +12,8 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 // ---------------------------------------------------------------------------
 
 // Mock the local-db module
-const mockLocalDbSelect = mock(() => ({
+// biome-ignore lint/suspicious/noExplicitAny: test mock
+const mockLocalDbSelect: any = mock(() => ({
 	from: mock(() => ({
 		where: mock(() => ({
 			get: mock(() => null),
@@ -308,7 +309,9 @@ describe("initializeWorkspaceWorktree", () => {
 		test("passes correct args to worktreeAdd", async () => {
 			await initializeWorkspaceWorktree(baseParams);
 
-			const callArgs = mockRemoteGitOps.worktreeAdd.mock.calls[0];
+			const calls = mockRemoteGitOps.worktreeAdd.mock.calls as unknown[][];
+			expect(calls.length).toBeGreaterThan(0);
+			const callArgs = calls[0]!;
 			// First arg is repoPath (mainRepoPath from params)
 			expect(callArgs[0]).toBe("/local/repos/my-project");
 			// Second arg is branch name
@@ -318,7 +321,7 @@ describe("initializeWorkspaceWorktree", () => {
 		});
 
 		test("fails with error when SSH connection is not available", async () => {
-			mockGetActiveConnection.mockReturnValue(undefined);
+			mockGetActiveConnection.mockReturnValue(undefined as never);
 
 			await initializeWorkspaceWorktree(baseParams);
 
