@@ -18,6 +18,7 @@ import { createNotificationsRouter } from "./notifications";
 import { createPermissionsRouter } from "./permissions";
 import { createPortsRouter } from "./ports";
 import { createProjectsRouter } from "./projects";
+import { createRemoteMachinesRouter } from "./remote-machines";
 import { createResourceMetricsRouter } from "./resource-metrics";
 import { createRingtoneRouter } from "./ringtone";
 import { createSettingsRouter } from "./settings";
@@ -52,6 +53,7 @@ export const createAppRouter = (getWindow: () => BrowserWindow | null) => {
 		settings: createSettingsRouter(),
 		config: createConfigRouter(),
 		uiState: createUiStateRouter(),
+		remoteMachines: createRemoteMachinesRouter(),
 		ringtone: createRingtoneRouter(getWindow),
 	});
 };
