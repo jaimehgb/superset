@@ -119,6 +119,7 @@ export const createQueryProcedures = () => {
 						mainRepoPath: string;
 						hideImage: boolean;
 						iconUrl: string | null;
+						remoteMachineId: string | null;
 					};
 					workspaces: Array<{
 						id: string;
@@ -150,6 +151,7 @@ export const createQueryProcedures = () => {
 						mainRepoPath: project.mainRepoPath,
 						hideImage: project.hideImage ?? false,
 						iconUrl: project.iconUrl ?? null,
+						remoteMachineId: project.remoteMachineId ?? null,
 					},
 					workspaces: [],
 				});

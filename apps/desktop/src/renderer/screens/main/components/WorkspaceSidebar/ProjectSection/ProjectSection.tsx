@@ -30,6 +30,7 @@ interface ProjectSectionProps {
 	mainRepoPath: string;
 	hideImage: boolean;
 	iconUrl: string | null;
+	remoteMachineId: string | null;
 	workspaces: Workspace[];
 	/** Base index for keyboard shortcuts (0-based) */
 	shortcutBaseIndex: number;
@@ -47,6 +48,7 @@ export function ProjectSection({
 	mainRepoPath,
 	hideImage,
 	iconUrl,
+	remoteMachineId,
 	workspaces,
 	shortcutBaseIndex,
 	index,
@@ -146,6 +148,7 @@ export function ProjectSection({
 					mainRepoPath={mainRepoPath}
 					hideImage={hideImage}
 					iconUrl={iconUrl}
+					remoteMachineId={remoteMachineId}
 					isCollapsed={isCollapsed}
 					isSidebarCollapsed={isSidebarCollapsed}
 					onToggleCollapse={() => toggleProjectCollapsed(projectId)}
@@ -204,6 +207,7 @@ export function ProjectSection({
 				mainRepoPath={mainRepoPath}
 				hideImage={hideImage}
 				iconUrl={iconUrl}
+				remoteMachineId={remoteMachineId}
 				isCollapsed={isCollapsed}
 				isSidebarCollapsed={isSidebarCollapsed}
 				onToggleCollapse={() => toggleProjectCollapsed(projectId)}

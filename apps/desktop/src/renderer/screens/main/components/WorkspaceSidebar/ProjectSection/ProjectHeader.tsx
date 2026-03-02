@@ -35,6 +35,7 @@ import { STROKE_WIDTH } from "../constants";
 import { RenameInput } from "../RenameInput";
 import { CloseProjectDialog } from "./CloseProjectDialog";
 import { ProjectThumbnail } from "./ProjectThumbnail";
+import { RemoteBadge } from "./RemoteBadge";
 
 interface ProjectHeaderProps {
 	projectId: string;
@@ -44,6 +45,7 @@ interface ProjectHeaderProps {
 	mainRepoPath: string;
 	hideImage: boolean;
 	iconUrl: string | null;
+	remoteMachineId: string | null;
 	/** Whether the project section is collapsed (workspaces hidden) */
 	isCollapsed: boolean;
 	/** Whether the sidebar is in collapsed mode (icon-only view) */
@@ -61,6 +63,7 @@ export function ProjectHeader({
 	mainRepoPath,
 	hideImage,
 	iconUrl,
+	remoteMachineId,
 	isCollapsed,
 	isSidebarCollapsed = false,
 	onToggleCollapse,
@@ -213,7 +216,12 @@ export function ProjectHeader({
 							</TooltipTrigger>
 						</ContextMenuTrigger>
 						<TooltipContent className="flex flex-col gap-0.5">
-							<span className="font-medium">{projectName}</span>
+							<div className="flex items-center gap-1.5">
+								<span className="font-medium">{projectName}</span>
+								{remoteMachineId && (
+									<RemoteBadge remoteMachineId={remoteMachineId} />
+								)}
+							</div>
 							<span className="text-xs text-muted-foreground">
 								{workspaceCount} workspace{workspaceCount !== 1 ? "s" : ""}
 							</span>
@@ -308,6 +316,9 @@ export function ProjectHeader({
 									iconUrl={iconUrl}
 								/>
 								<span className="truncate">{projectName}</span>
+								{remoteMachineId && (
+									<RemoteBadge remoteMachineId={remoteMachineId} />
+								)}
 								<span className="text-xs text-muted-foreground tabular-nums font-normal">
 									({workspaceCount})
 								</span>
