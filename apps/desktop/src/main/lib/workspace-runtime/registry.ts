@@ -14,6 +14,7 @@
  */
 
 import { LocalWorkspaceRuntime } from "./local";
+import { RemoteWorkspaceRuntime } from "./remote";
 import type { WorkspaceRuntime, WorkspaceRuntimeRegistry } from "./types";
 
 // =============================================================================
@@ -28,6 +29,7 @@ import type { WorkspaceRuntime, WorkspaceRuntimeRegistry } from "./types";
  */
 class DefaultWorkspaceRuntimeRegistry implements WorkspaceRuntimeRegistry {
 	private localRuntime: LocalWorkspaceRuntime | null = null;
+	private remoteRuntimes: Map<string, RemoteWorkspaceRuntime> = new Map();
 
 	/**
 	 * Get the runtime for a specific workspace.
@@ -52,6 +54,48 @@ class DefaultWorkspaceRuntimeRegistry implements WorkspaceRuntimeRegistry {
 			this.localRuntime = new LocalWorkspaceRuntime();
 		}
 		return this.localRuntime;
+	}
+
+	// ===========================================================================
+	// Remote Runtime Management
+	// ===========================================================================
+
+	/**
+	 * Register a remote runtime for a machine.
+	 *
+	 * If a runtime for this machineId already exists, returns the existing one.
+	 * The forwardedSocketPath is the local path to the SSH-forwarded Unix socket
+	 * that connects to the remote terminal host daemon.
+	 */
+	registerRemoteRuntime(
+		machineId: string,
+		forwardedSocketPath: string,
+	): RemoteWorkspaceRuntime {
+		const existing = this.remoteRuntimes.get(machineId);
+		if (existing) return existing;
+		const runtime = new RemoteWorkspaceRuntime(machineId, forwardedSocketPath);
+		this.remoteRuntimes.set(machineId, runtime);
+		return runtime;
+	}
+
+	/**
+	 * Unregister a remote runtime for a machine.
+	 *
+	 * Cleans up the terminal runtime and removes the entry from the registry.
+	 */
+	unregisterRemoteRuntime(machineId: string): void {
+		const runtime = this.remoteRuntimes.get(machineId);
+		if (runtime) {
+			runtime.terminal.cleanup();
+			this.remoteRuntimes.delete(machineId);
+		}
+	}
+
+	/**
+	 * Get the remote runtime for a machine, if registered.
+	 */
+	getRemoteRuntime(machineId: string): RemoteWorkspaceRuntime | undefined {
+		return this.remoteRuntimes.get(machineId);
 	}
 }
 

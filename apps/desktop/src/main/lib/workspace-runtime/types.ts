@@ -224,4 +224,28 @@ export interface WorkspaceRuntimeRegistry {
 	 * Used by settings screens and endpoints that don't have workspace context.
 	 */
 	getDefault(): WorkspaceRuntime;
+
+	// ===========================================================================
+	// Remote Runtime Management
+	// ===========================================================================
+
+	/**
+	 * Register a remote runtime for a machine.
+	 * Returns existing runtime if one is already registered for this machineId.
+	 */
+	registerRemoteRuntime(
+		machineId: string,
+		forwardedSocketPath: string,
+	): WorkspaceRuntime;
+
+	/**
+	 * Unregister a remote runtime for a machine.
+	 * Cleans up the terminal runtime and removes the entry.
+	 */
+	unregisterRemoteRuntime(machineId: string): void;
+
+	/**
+	 * Get the remote runtime for a machine, if registered.
+	 */
+	getRemoteRuntime(machineId: string): WorkspaceRuntime | undefined;
 }
