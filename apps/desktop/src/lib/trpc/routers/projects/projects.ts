@@ -5,6 +5,7 @@ import {
 	BRANCH_PREFIX_MODES,
 	EXTERNAL_APPS,
 	projects,
+	remoteMachines,
 	type SelectProject,
 	settings,
 	workspaces,
@@ -14,6 +15,7 @@ import { and, desc, eq, inArray, isNull, not } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { track } from "main/lib/analytics";
+import { RemoteGitOperations } from "main/lib/git/remote";
 import { localDb } from "main/lib/local-db";
 import {
 	deleteProjectIcon,
@@ -25,6 +27,7 @@ import simpleGit from "simple-git";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 import { resolveDefaultEditor } from "../external";
+import { getActiveConnection } from "../remote-machines";
 import {
 	activateProject,
 	getBranchWorkspace,
@@ -635,10 +638,116 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						.trim()
 						.optional()
 						.transform((v) => (v && v.length > 0 ? v : undefined)),
+					// When provided, clone onto the remote machine instead of locally
+					remoteMachineId: z.string().optional(),
 				}),
 			)
 			.mutation(async ({ input }) => {
 				try {
+					const repoName = extractRepoName(input.url);
+					if (!repoName) {
+						return {
+							canceled: false as const,
+							success: false as const,
+							error: "Invalid repository URL",
+						};
+					}
+
+					// ── Remote clone branch ──────────────────────────────────
+					if (input.remoteMachineId) {
+						const machine = localDb
+							.select()
+							.from(remoteMachines)
+							.where(eq(remoteMachines.id, input.remoteMachineId))
+							.get();
+
+						if (!machine) {
+							return {
+								canceled: false as const,
+								success: false as const,
+								error: `Remote machine ${input.remoteMachineId} not found`,
+							};
+						}
+
+						const ssh = getActiveConnection(input.remoteMachineId);
+						if (!ssh) {
+							return {
+								canceled: false as const,
+								success: false as const,
+								error: `Remote machine "${machine.name}" is not connected. Please connect first.`,
+							};
+						}
+
+						const remoteClonePath = `${machine.projectsDir}/${repoName}`;
+
+						// Check if we already have a project record for this remote path
+						const existingProject = localDb
+							.select()
+							.from(projects)
+							.where(eq(projects.mainRepoPath, remoteClonePath))
+							.get();
+
+						if (existingProject) {
+							localDb
+								.update(projects)
+								.set({ lastOpenedAt: Date.now() })
+								.where(eq(projects.id, existingProject.id))
+								.run();
+
+							await ensureMainWorkspace({
+								...existingProject,
+								lastOpenedAt: Date.now(),
+							});
+
+							track("project_opened", {
+								project_id: existingProject.id,
+								method: "clone",
+							});
+
+							return {
+								canceled: false as const,
+								success: true as const,
+								project: {
+									...existingProject,
+									lastOpenedAt: Date.now(),
+								},
+							};
+						}
+
+						// Clone on the remote machine via SSH
+						const remoteGit = new RemoteGitOperations(ssh);
+						await remoteGit.clone(input.url, remoteClonePath);
+
+						const defaultBranch =
+							await remoteGit.getDefaultBranch(remoteClonePath);
+
+						const project = localDb
+							.insert(projects)
+							.values({
+								mainRepoPath: remoteClonePath,
+								name: repoName,
+								color: getDefaultProjectColor(),
+								defaultBranch,
+								remoteMachineId: input.remoteMachineId,
+							})
+							.returning()
+							.get();
+
+						await ensureMainWorkspace(project);
+
+						track("project_opened", {
+							project_id: project.id,
+							method: "clone",
+						});
+
+						return {
+							canceled: false as const,
+							success: true as const,
+							project,
+						};
+					}
+
+					// ── Local clone branch (existing behavior) ───────────────
 					let targetDir = input.targetDirectory;
 
 					if (!targetDir) {
@@ -661,15 +770,6 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						}
 
 						targetDir = result.filePaths[0];
-					}
-
-					const repoName = extractRepoName(input.url);
-					if (!repoName) {
-						return {
-							canceled: false as const,
-							success: false as const,
-							error: "Invalid repository URL",
-						};
 					}
 
 					const clonePath = join(targetDir, repoName);

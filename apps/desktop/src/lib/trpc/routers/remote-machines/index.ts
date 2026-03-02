@@ -32,6 +32,16 @@ import {
  */
 const activeConnections = new Map<string, SshConnectionManager>();
 
+/**
+ * Retrieve the active SSH connection for a given machine ID.
+ * Returns undefined if the machine is not currently connected.
+ */
+export function getActiveConnection(
+	machineId: string,
+): SshConnectionManager | undefined {
+	return activeConnections.get(machineId);
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
