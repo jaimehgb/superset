@@ -43,6 +43,18 @@ export const createGitStatusProcedures = () => {
 					throw new Error(`Project ${workspace.projectId} not found`);
 				}
 
+				// Remote projects: return basic status without local git operations
+				if (project.remoteMachineId) {
+					const gitStatus = {
+						branch: worktree.branch,
+						needsRebase: false,
+						ahead: 0,
+						behind: 0,
+						lastRefreshed: Date.now(),
+					};
+					return { gitStatus, defaultBranch: project.defaultBranch ?? "main" };
+				}
+
 				const remoteDefaultBranch = await refreshDefaultBranch(
 					project.mainRepoPath,
 				);
@@ -92,7 +104,7 @@ export const createGitStatusProcedures = () => {
 				}
 
 				const project = getProject(workspace.projectId);
-				if (!project) {
+				if (!project || project.remoteMachineId) {
 					return { ahead: 0, behind: 0 };
 				}
 
@@ -107,6 +119,12 @@ export const createGitStatusProcedures = () => {
 			.query(async ({ input }) => {
 				const workspace = getWorkspace(input.workspaceId);
 				if (!workspace) {
+					return null;
+				}
+
+				// Skip for remote projects (no local worktree path to check)
+				const project = getProject(workspace.projectId);
+				if (project?.remoteMachineId) {
 					return null;
 				}
 
@@ -190,7 +208,7 @@ export const createGitStatusProcedures = () => {
 			.input(z.object({ projectId: z.string() }))
 			.query(async ({ input }) => {
 				const project = getProject(input.projectId);
-				if (!project) {
+				if (!project || project.remoteMachineId) {
 					return [];
 				}
 

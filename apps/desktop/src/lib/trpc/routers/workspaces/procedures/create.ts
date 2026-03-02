@@ -35,6 +35,8 @@ import {
 	sanitizeBranchNameWithMaxLength,
 	worktreeExists,
 } from "../utils/git";
+import { RemoteGitOperations } from "main/lib/git/remote";
+import { getActiveConnection } from "../../remote-machines/connections";
 import { resolveWorktreePath } from "../utils/resolve-worktree-path";
 import { copySupersetConfigToWorktree, loadSetupConfig } from "../utils/setup";
 import { initializeWorkspaceWorktree } from "../utils/workspace-init";
@@ -525,13 +527,24 @@ export const createCreateProcedures = () => {
 					throw new Error(`Project ${input.projectId} not found`);
 				}
 
-				const branch =
-					input.branch || (await getCurrentBranch(project.mainRepoPath));
+				let branch: string | null;
+				if (project.remoteMachineId) {
+					// Remote project: get branch via SSH
+					const ssh = getActiveConnection(project.remoteMachineId);
+					if (ssh) {
+						const remoteGit = new RemoteGitOperations(ssh);
+						branch = input.branch || (await remoteGit.getCurrentBranch(project.mainRepoPath));
+					} else {
+						branch = input.branch || project.defaultBranch || "main";
+					}
+				} else {
+					branch = input.branch || (await getCurrentBranch(project.mainRepoPath));
+				}
 				if (!branch) {
 					throw new Error("Could not determine current branch");
 				}
 
-				if (input.branch) {
+				if (input.branch && !project.remoteMachineId) {
 					const existingBranchWorkspace = getBranchWorkspace(input.projectId);
 					if (
 						existingBranchWorkspace &&

@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { remoteMachines } from "@superset/local-db";
@@ -319,7 +320,19 @@ export const createRemoteMachinesRouter = () => {
 					await ssh.forwardUnixSocket(remoteDaemonSocket, localSocketPath);
 					console.log("[remote] Socket forwarded");
 
-					// Step 5: Set up reverse port forward for hooks
+					// Step 5b: Copy the remote daemon's auth token locally
+					// The TerminalHostClient reads the token from a local file path
+					const remoteTokenPath = `${remoteHome}/${REMOTE_SUPERSET_DIR}/terminal-host.token`;
+					const tokenResult = await ssh.exec(`cat ${remoteTokenPath}`);
+					if (tokenResult.code === 0 && tokenResult.stdout.trim()) {
+						const localTokenPath = localSocketPath.replace(".sock", ".token");
+						writeFileSync(localTokenPath, tokenResult.stdout.trim(), { mode: 0o600 });
+						console.log("[remote] Auth token copied to local path");
+					} else {
+						console.warn("[remote] Could not read remote auth token");
+					}
+
+					// Step 6: Set up reverse port forward for hooks
 					if (input.hooksPort) {
 						console.log(
 							`[remote] Setting up reverse port forward for hooks port ${input.hooksPort}`,

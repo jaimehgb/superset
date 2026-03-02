@@ -140,7 +140,21 @@ async function ensureMainWorkspace(project: Project): Promise<void> {
 		return;
 	}
 
-	const branch = await getCurrentBranch(project.mainRepoPath);
+	// For remote projects, get the branch via SSH instead of local simple-git
+	let branch: string | null;
+	if (project.remoteMachineId) {
+		const ssh = getActiveConnection(project.remoteMachineId);
+		if (!ssh) {
+			console.warn(
+				`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
+			);
+			return;
+		}
+		const remoteGit = new RemoteGitOperations(ssh);
+		branch = await remoteGit.getCurrentBranch(project.mainRepoPath);
+	} else {
+		branch = await getCurrentBranch(project.mainRepoPath);
+	}
 	if (!branch) {
 		console.warn(
 			`[ensureMainWorkspace] Could not determine current branch for project ${project.id}`,
@@ -337,6 +351,21 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						.get();
 					if (!project) {
 						throw new Error(`Project ${input.projectId} not found`);
+					}
+
+					// Remote projects: return minimal branch info from DB
+					if (project.remoteMachineId) {
+						return {
+							branches: [
+								{
+									name: project.defaultBranch ?? "main",
+									lastCommitDate: Date.now(),
+									isLocal: true,
+									isRemote: true,
+								},
+							],
+							defaultBranch: project.defaultBranch ?? "main",
+						};
 					}
 
 					const git = simpleGit(project.mainRepoPath);
@@ -678,7 +707,13 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 							};
 						}
 
-						const remoteClonePath = `${machine.projectsDir}/${repoName}`;
+						// Resolve ~ to absolute path (shell-escaped paths suppress tilde expansion)
+						let resolvedProjectsDir = machine.projectsDir;
+						if (resolvedProjectsDir.startsWith("~/") || resolvedProjectsDir === "~") {
+							const remoteHome = (await ssh.exec("echo $HOME")).stdout.trim();
+							resolvedProjectsDir = resolvedProjectsDir.replace(/^~/, remoteHome);
+						}
+						const remoteClonePath = `${resolvedProjectsDir}/${repoName}`;
 
 						// Check if we already have a project record for this remote path
 						const existingProject = localDb
@@ -713,6 +748,9 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 								},
 							};
 						}
+
+						// Ensure the projects directory exists on the remote
+						await ssh.exec(`mkdir -p ${resolvedProjectsDir}`);
 
 						// Clone on the remote machine via SSH
 						const remoteGit = new RemoteGitOperations(ssh);
@@ -1048,6 +1086,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					throw new Error(`Project ${input.id} not found`);
 				}
 
+				// Remote projects: no local git repo to refresh
+				if (project.remoteMachineId) {
+					return {
+						success: true,
+						defaultBranch: project.defaultBranch ?? "main",
+						changed: false,
+					};
+				}
+
 				const remoteDefaultBranch = await refreshDefaultBranch(
 					project.mainRepoPath,
 				);
@@ -1228,6 +1275,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					.get();
 
 				if (!project) {
+					return null;
+				}
+
+				// Remote projects: no local git repo to read config from
+				if (project.remoteMachineId) {
 					return null;
 				}
 
