@@ -1,10 +1,15 @@
 import { existsSync } from "node:fs";
 import type { SelectWorktree } from "@superset/local-db";
 import { track } from "main/lib/analytics";
+import { resolveGitOps } from "main/lib/git";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
-import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
+import {
+	getWorkspaceRuntimeRegistry,
+	RemoteRuntimeNotConnectedError,
+} from "main/lib/workspace-runtime";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
+import { getActiveConnection } from "../../remote-machines";
 import {
 	clearWorkspaceDeletingStatus,
 	deleteWorkspace,
@@ -23,6 +28,18 @@ import {
 	worktreeExists,
 } from "../utils/git";
 import { removeWorktreeFromDisk, runTeardown } from "../utils/teardown";
+
+/** Resolve gitOps for a project (local or remote). Returns null if remote but disconnected. */
+function getProjectGitOps(project: { remoteMachineId?: string | null }) {
+	if (!project.remoteMachineId) {
+		return resolveGitOps();
+	}
+	const sshConn = getActiveConnection(project.remoteMachineId);
+	if (!sshConn) {
+		return null;
+	}
+	return resolveGitOps(sshConn);
+}
 
 export const createDeleteProcedures = () => {
 	return router({
@@ -58,9 +75,14 @@ export const createDeleteProcedures = () => {
 					};
 				}
 
-				const activeTerminalCount = await getWorkspaceRuntimeRegistry()
-					.getForWorkspaceId(input.id)
-					.terminal.getSessionCountByWorkspaceId(input.id);
+				let activeTerminalCount = 0;
+				try {
+					activeTerminalCount = await getWorkspaceRuntimeRegistry()
+						.getForWorkspaceId(input.id)
+						.terminal.getSessionCountByWorkspaceId(input.id);
+				} catch (err) {
+					if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+				}
 
 				if (workspace.type === "branch") {
 					return {
@@ -92,48 +114,73 @@ export const createDeleteProcedures = () => {
 				const project = getProject(workspace.projectId);
 
 				if (worktree && project) {
-					try {
-						const exists = await worktreeExists(
-							project.mainRepoPath,
-							worktree.path,
-						);
+					const gitOps = getProjectGitOps(project);
+					const isRemote = Boolean(project.remoteMachineId);
 
-						if (!exists) {
+					// Remote but disconnected — allow deletion without git checks
+					if (isRemote && !gitOps) {
+						return {
+							canDelete: true,
+							reason: null,
+							workspace,
+							warning:
+								"Remote machine not connected — git status could not be checked",
+							activeTerminalCount,
+							hasChanges: false,
+							hasUnpushedCommits: false,
+						};
+					}
+
+					if (gitOps) {
+						try {
+							const exists = await worktreeExists(
+								project.mainRepoPath,
+								worktree.path,
+								gitOps,
+							);
+
+							if (!exists) {
+								return {
+									canDelete: true,
+									reason: null,
+									workspace,
+									warning:
+										"Worktree not found in git (may have been manually removed)",
+									activeTerminalCount,
+									hasChanges: false,
+									hasUnpushedCommits: false,
+								};
+							}
+
+							// Skip uncommitted/unpushed checks for remote — those use local filesystem
+							let hasChanges = false;
+							let unpushedCommits = false;
+							if (!isRemote) {
+								[hasChanges, unpushedCommits] = await Promise.all([
+									hasUncommittedChanges(worktree.path),
+									hasUnpushedCommits(worktree.path),
+								]);
+							}
+
 							return {
 								canDelete: true,
 								reason: null,
 								workspace,
-								warning:
-									"Worktree not found in git (may have been manually removed)",
+								warning: null,
+								activeTerminalCount,
+								hasChanges,
+								hasUnpushedCommits: unpushedCommits,
+							};
+						} catch (error) {
+							return {
+								canDelete: false,
+								reason: `Failed to check worktree status: ${error instanceof Error ? error.message : String(error)}`,
+								workspace,
 								activeTerminalCount,
 								hasChanges: false,
 								hasUnpushedCommits: false,
 							};
 						}
-
-						const [hasChanges, unpushedCommits] = await Promise.all([
-							hasUncommittedChanges(worktree.path),
-							hasUnpushedCommits(worktree.path),
-						]);
-
-						return {
-							canDelete: true,
-							reason: null,
-							workspace,
-							warning: null,
-							activeTerminalCount,
-							hasChanges,
-							hasUnpushedCommits: unpushedCommits,
-						};
-					} catch (error) {
-						return {
-							canDelete: false,
-							reason: `Failed to check worktree status: ${error instanceof Error ? error.message : String(error)}`,
-							workspace,
-							activeTerminalCount,
-							hasChanges: false,
-							hasUnpushedCommits: false,
-						};
 					}
 				}
 
@@ -192,12 +239,19 @@ export const createDeleteProcedures = () => {
 				}
 
 				const project = getProject(workspace.projectId);
+				const isRemote = Boolean(project?.remoteMachineId);
 
 				let worktree: SelectWorktree | undefined;
 
-				const terminalPromise = getWorkspaceRuntimeRegistry()
-					.getForWorkspaceId(input.id)
-					.terminal.killByWorkspaceId(input.id);
+				let terminalPromise: Promise<{ killed: number; failed: number }>;
+				try {
+					terminalPromise = getWorkspaceRuntimeRegistry()
+						.getForWorkspaceId(input.id)
+						.terminal.killByWorkspaceId(input.id);
+				} catch (err) {
+					if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+					terminalPromise = Promise.resolve({ killed: 0, failed: 0 });
+				}
 
 				let teardownPromise:
 					| Promise<{ success: boolean; error?: string; output?: string }>
@@ -205,7 +259,8 @@ export const createDeleteProcedures = () => {
 				if (workspace.type === "worktree" && workspace.worktreeId) {
 					worktree = getWorktree(workspace.worktreeId);
 
-					if (worktree && project && existsSync(worktree.path)) {
+					// Skip teardown for remote projects (local scripts don't apply)
+					if (worktree && project && !isRemote && existsSync(worktree.path)) {
 						teardownPromise = runTeardown({
 							mainRepoPath: project.mainRepoPath,
 							worktreePath: worktree.path,
@@ -214,7 +269,7 @@ export const createDeleteProcedures = () => {
 						});
 					} else {
 						console.warn(
-							`[workspace/delete] Skipping teardown: worktree=${!!worktree}, project=${!!project}, pathExists=${worktree ? existsSync(worktree.path) : "N/A"}`,
+							`[workspace/delete] Skipping teardown: worktree=${!!worktree}, project=${!!project}, remote=${isRemote}, pathExists=${worktree && !isRemote ? existsSync(worktree.path) : "N/A"}`,
 						);
 					}
 				} else {
@@ -249,27 +304,73 @@ export const createDeleteProcedures = () => {
 				}
 
 				if (worktree && project) {
-					await workspaceInitManager.acquireProjectLock(project.id);
+					const gitOps = getProjectGitOps(project);
 
-					try {
-						const removeResult = await removeWorktreeFromDisk({
-							mainRepoPath: project.mainRepoPath,
-							worktreePath: worktree.path,
-						});
-						if (!removeResult.success) {
-							clearWorkspaceDeletingStatus(input.id);
-							return removeResult;
+					if (isRemote && !gitOps) {
+						// Remote but disconnected — skip worktree removal on remote,
+						// just clean up DB records below
+						console.warn(
+							`[workspace/delete] Remote machine not connected, skipping remote worktree removal for ${worktree.path}`,
+						);
+					} else if (isRemote && gitOps) {
+						await workspaceInitManager.acquireProjectLock(project.id);
+						try {
+							try {
+								await gitOps.worktreeRemove(
+									project.mainRepoPath,
+									worktree.path,
+								);
+							} catch (error) {
+								const msg =
+									error instanceof Error ? error.message : String(error);
+								if (
+									!msg.includes("is not a working tree") &&
+									!msg.includes("No such file or directory")
+								) {
+									clearWorkspaceDeletingStatus(input.id);
+									return {
+										success: false,
+										error: `Failed to remove worktree: ${msg}`,
+									};
+								}
+								console.warn(
+									`[workspace/delete] Remote worktree not found, continuing: ${msg}`,
+								);
+							}
+						} finally {
+							workspaceInitManager.releaseProjectLock(project.id);
 						}
-					} finally {
-						workspaceInitManager.releaseProjectLock(project.id);
+					} else if (gitOps) {
+						// Local project
+						await workspaceInitManager.acquireProjectLock(project.id);
+						try {
+							const removeResult = await removeWorktreeFromDisk({
+								mainRepoPath: project.mainRepoPath,
+								worktreePath: worktree.path,
+							});
+							if (!removeResult.success) {
+								clearWorkspaceDeletingStatus(input.id);
+								return removeResult;
+							}
+						} finally {
+							workspaceInitManager.releaseProjectLock(project.id);
+						}
 					}
 
-					if (input.deleteLocalBranch && workspace.branch) {
+					if (input.deleteLocalBranch && workspace.branch && gitOps) {
 						try {
-							await deleteLocalBranch({
-								mainRepoPath: project.mainRepoPath,
-								branch: workspace.branch,
-							});
+							if (isRemote) {
+								await gitOps.raw(project.mainRepoPath, [
+									"branch",
+									"-D",
+									workspace.branch,
+								]);
+							} else {
+								await deleteLocalBranch({
+									mainRepoPath: project.mainRepoPath,
+									branch: workspace.branch,
+								});
+							}
 						} catch (error) {
 							console.error(
 								`[workspace/delete] Branch cleanup failed (non-blocking):`,
@@ -310,9 +411,15 @@ export const createDeleteProcedures = () => {
 					throw new Error("Workspace not found");
 				}
 
-				const terminalResult = await getWorkspaceRuntimeRegistry()
-					.getForWorkspaceId(input.id)
-					.terminal.killByWorkspaceId(input.id);
+				let terminalResult: { killed: number; failed: number };
+				try {
+					terminalResult = await getWorkspaceRuntimeRegistry()
+						.getForWorkspaceId(input.id)
+						.terminal.killByWorkspaceId(input.id);
+				} catch (err) {
+					if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+					terminalResult = { killed: 0, failed: 0 };
+				}
 
 				deleteWorkspace(input.id);
 				hideProjectIfNoWorkspaces(workspace.projectId);
@@ -371,46 +478,78 @@ export const createDeleteProcedures = () => {
 					};
 				}
 
-				try {
-					const exists = await worktreeExists(
-						project.mainRepoPath,
-						worktree.path,
-					);
+				const gitOps = getProjectGitOps(project);
+				const isRemote = Boolean(project.remoteMachineId);
 
-					if (!exists) {
-						return {
-							canDelete: true,
-							reason: null,
-							worktree,
-							warning:
-								"Worktree not found in git (may have been manually removed)",
-							hasChanges: false,
-							hasUnpushedCommits: false,
-						};
-					}
-
-					const [hasChanges, unpushedCommits] = await Promise.all([
-						hasUncommittedChanges(worktree.path),
-						hasUnpushedCommits(worktree.path),
-					]);
-
+				// Remote but disconnected — allow deletion without git checks
+				if (isRemote && !gitOps) {
 					return {
 						canDelete: true,
 						reason: null,
 						worktree,
-						warning: null,
-						hasChanges,
-						hasUnpushedCommits: unpushedCommits,
-					};
-				} catch (error) {
-					return {
-						canDelete: false,
-						reason: `Failed to check worktree status: ${error instanceof Error ? error.message : String(error)}`,
-						worktree,
+						warning:
+							"Remote machine not connected — git status could not be checked",
 						hasChanges: false,
 						hasUnpushedCommits: false,
 					};
 				}
+
+				if (gitOps) {
+					try {
+						const exists = await worktreeExists(
+							project.mainRepoPath,
+							worktree.path,
+							gitOps,
+						);
+
+						if (!exists) {
+							return {
+								canDelete: true,
+								reason: null,
+								worktree,
+								warning:
+									"Worktree not found in git (may have been manually removed)",
+								hasChanges: false,
+								hasUnpushedCommits: false,
+							};
+						}
+
+						let hasChanges = false;
+						let unpushedCommits = false;
+						if (!isRemote) {
+							[hasChanges, unpushedCommits] = await Promise.all([
+								hasUncommittedChanges(worktree.path),
+								hasUnpushedCommits(worktree.path),
+							]);
+						}
+
+						return {
+							canDelete: true,
+							reason: null,
+							worktree,
+							warning: null,
+							hasChanges,
+							hasUnpushedCommits: unpushedCommits,
+						};
+					} catch (error) {
+						return {
+							canDelete: false,
+							reason: `Failed to check worktree status: ${error instanceof Error ? error.message : String(error)}`,
+							worktree,
+							hasChanges: false,
+							hasUnpushedCommits: false,
+						};
+					}
+				}
+
+				return {
+					canDelete: true,
+					reason: null,
+					worktree,
+					warning: null,
+					hasChanges: false,
+					hasUnpushedCommits: false,
+				};
 			}),
 
 		deleteWorktree: publicProcedure
@@ -433,52 +572,87 @@ export const createDeleteProcedures = () => {
 					return { success: false, error: "Project not found" };
 				}
 
-				await workspaceInitManager.acquireProjectLock(project.id);
+				const isRemote = Boolean(project.remoteMachineId);
+				const gitOps = getProjectGitOps(project);
 
-				try {
-					const exists = await worktreeExists(
-						project.mainRepoPath,
-						worktree.path,
+				if (isRemote && !gitOps) {
+					// Remote but disconnected — just clean up DB records
+					console.warn(
+						`[worktree/delete] Remote machine not connected, skipping remote worktree removal for ${worktree.path}`,
 					);
+				} else if (gitOps) {
+					await workspaceInitManager.acquireProjectLock(project.id);
 
-					if (exists) {
-						const teardownResult = await runTeardown({
-							mainRepoPath: project.mainRepoPath,
-							worktreePath: worktree.path,
-							workspaceName: worktree.branch,
-							projectId: project.id,
-						});
-						if (!teardownResult.success) {
-							if (input.force) {
-								console.warn(
-									`[worktree/delete] Teardown failed but force=true, continuing deletion:`,
-									teardownResult.error,
-								);
-							} else {
-								return {
-									success: false,
-									error: `Teardown failed: ${teardownResult.error}`,
-									output: teardownResult.output,
-								};
+					try {
+						const exists = await worktreeExists(
+							project.mainRepoPath,
+							worktree.path,
+							gitOps,
+						);
+
+						if (exists) {
+							// Skip teardown for remote projects
+							if (!isRemote) {
+								const teardownResult = await runTeardown({
+									mainRepoPath: project.mainRepoPath,
+									worktreePath: worktree.path,
+									workspaceName: worktree.branch,
+									projectId: project.id,
+								});
+								if (!teardownResult.success) {
+									if (input.force) {
+										console.warn(
+											`[worktree/delete] Teardown failed but force=true, continuing deletion:`,
+											teardownResult.error,
+										);
+									} else {
+										return {
+											success: false,
+											error: `Teardown failed: ${teardownResult.error}`,
+											output: teardownResult.output,
+										};
+									}
+								}
 							}
 						}
-					}
 
-					if (exists) {
-						const removeResult = await removeWorktreeFromDisk({
-							mainRepoPath: project.mainRepoPath,
-							worktreePath: worktree.path,
-						});
-						if (!removeResult.success) {
-							return removeResult;
+						if (exists) {
+							if (isRemote) {
+								try {
+									await gitOps.worktreeRemove(
+										project.mainRepoPath,
+										worktree.path,
+									);
+								} catch (error) {
+									const msg =
+										error instanceof Error ? error.message : String(error);
+									if (
+										!msg.includes("is not a working tree") &&
+										!msg.includes("No such file or directory")
+									) {
+										return {
+											success: false,
+											error: `Failed to remove worktree: ${msg}`,
+										};
+									}
+								}
+							} else {
+								const removeResult = await removeWorktreeFromDisk({
+									mainRepoPath: project.mainRepoPath,
+									worktreePath: worktree.path,
+								});
+								if (!removeResult.success) {
+									return removeResult;
+								}
+							}
+						} else {
+							console.warn(
+								`Worktree ${worktree.path} not found in git, skipping removal`,
+							);
 						}
-					} else {
-						console.warn(
-							`Worktree ${worktree.path} not found in git, skipping removal`,
-						);
+					} finally {
+						workspaceInitManager.releaseProjectLock(project.id);
 					}
-				} finally {
-					workspaceInitManager.releaseProjectLock(project.id);
 				}
 
 				deleteWorktreeRecord(input.worktreeId);

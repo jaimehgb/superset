@@ -15,6 +15,7 @@ import {
 	getRegisteredWorktree,
 	gitSwitchBranch,
 } from "./security";
+import { isRemoteWorktree } from "./utils/is-remote-worktree";
 
 export const createBranchesRouter = () => {
 	return router({
@@ -31,6 +32,16 @@ export const createBranchesRouter = () => {
 					worktreeBaseBranch: string | null;
 				}> => {
 					assertRegisteredWorktree(input.worktreePath);
+
+					if (isRemoteWorktree(input.worktreePath)) {
+						return {
+							local: [],
+							remote: [],
+							defaultBranch: "main",
+							checkedOutBranches: {},
+							worktreeBaseBranch: null,
+						};
+					}
 
 					const git = simpleGit(input.worktreePath);
 

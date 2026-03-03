@@ -10,6 +10,8 @@ import { movePaneToNewTab, movePaneToTab } from "./actions/move-pane";
 import type {
 	AddFileViewerPaneOptions,
 	AddTabWithMultiplePanesOptions,
+	Pane,
+	Tab,
 	TabsState,
 	TabsStore,
 } from "./types";
@@ -260,6 +262,66 @@ export const useTabsStore = create<TabsStore>()(
 					}
 
 					return { tabId: tab.id, paneIds };
+				},
+
+				adoptSessions: (workspaceId, sessions) => {
+					const state = get();
+
+					// Filter out sessions that already have matching panes
+					const existingPaneIds = new Set(Object.keys(state.panes));
+					const orphaned = sessions.filter(
+						(s) => !existingPaneIds.has(s.paneId),
+					);
+					if (orphaned.length === 0) return;
+
+					const workspaceTabs = state.tabs.filter(
+						(t) => t.workspaceId === workspaceId,
+					);
+
+					const newTabs: Tab[] = [];
+					const newPanes: Record<string, Pane> = {};
+					let firstTabId: string | null = null;
+
+					for (const session of orphaned) {
+						const tabId = generateId("tab");
+						if (!firstTabId) firstTabId = tabId;
+
+						const pane: Pane = {
+							id: session.paneId,
+							tabId,
+							type: "terminal",
+							name: "Terminal",
+							isNew: false,
+						};
+
+						const tab: Tab = {
+							id: tabId,
+							name: generateTabName([...workspaceTabs, ...newTabs]),
+							workspaceId,
+							layout: pane.id,
+							createdAt: Date.now(),
+						};
+
+						newTabs.push(tab);
+						newPanes[pane.id] = pane;
+					}
+
+					const firstNewPaneId = orphaned[0]?.paneId;
+
+					set({
+						tabs: [...state.tabs, ...newTabs],
+						panes: { ...state.panes, ...newPanes },
+						activeTabIds: {
+							...state.activeTabIds,
+							...(firstTabId ? { [workspaceId]: firstTabId } : {}),
+						},
+						focusedPaneIds: {
+							...state.focusedPaneIds,
+							...(firstTabId && firstNewPaneId
+								? { [firstTabId]: firstNewPaneId }
+								: {}),
+						},
+					});
 				},
 
 				removeTab: (tabId) => {

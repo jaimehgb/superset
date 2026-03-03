@@ -29,6 +29,7 @@ import { setWorkspaceDockIcon } from "./lib/dock-icon";
 import { loadWebviewBrowserExtension } from "./lib/extensions";
 import { localDb } from "./lib/local-db";
 import { ensureProjectIconsDir, getProjectIconPath } from "./lib/project-icons";
+import { reconnectRemoteMachines } from "./lib/remote-reconnect";
 import { initSentry } from "./lib/sentry";
 import {
 	prewarmTerminalRuntime,
@@ -289,6 +290,11 @@ if (!gotTheLock) {
 		// Must happen before renderer restore runs
 		await reconcileDaemonSessions();
 		prewarmTerminalRuntime();
+
+		// Reconnect remote machines that were connected before restart (fire-and-forget)
+		reconnectRemoteMachines().catch((err) => {
+			console.error("[main] Remote machine reconnect failed:", err);
+		});
 
 		try {
 			setupAgentHooks();

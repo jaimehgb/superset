@@ -7,6 +7,7 @@ import { publicProcedure, router } from "../..";
 import { getStatusNoLock, NotGitRepoError } from "../workspaces/utils/git";
 import { assertRegisteredWorktree, secureFs } from "./security";
 import { applyNumstatToFiles } from "./utils/apply-numstat";
+import { isRemoteWorktree } from "./utils/is-remote-worktree";
 import {
 	parseGitLog,
 	parseGitStatus,
@@ -24,6 +25,23 @@ export const createStatusRouter = () => {
 			)
 			.query(async ({ input }): Promise<GitChangesStatus> => {
 				assertRegisteredWorktree(input.worktreePath);
+
+				if (isRemoteWorktree(input.worktreePath)) {
+					return {
+						branch: "",
+						defaultBranch: input.defaultBranch || "main",
+						againstBase: [],
+						commits: [],
+						staged: [],
+						unstaged: [],
+						untracked: [],
+						ahead: 0,
+						behind: 0,
+						pushCount: 0,
+						pullCount: 0,
+						hasUpstream: false,
+					};
+				}
 
 				const defaultBranch = input.defaultBranch || "main";
 				const git = simpleGit(input.worktreePath);
@@ -79,6 +97,10 @@ export const createStatusRouter = () => {
 			)
 			.query(async ({ input }): Promise<ChangedFile[]> => {
 				assertRegisteredWorktree(input.worktreePath);
+
+				if (isRemoteWorktree(input.worktreePath)) {
+					return [];
+				}
 
 				const git = simpleGit(input.worktreePath);
 

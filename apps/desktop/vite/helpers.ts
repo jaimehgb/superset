@@ -63,6 +63,29 @@ export function copyResourcesPlugin(): Plugin {
 }
 
 /**
+ * Bundles the remote daemon after the main process build.
+ * electron-vite cleans dist/ on startup, so the daemon bundle must be
+ * regenerated as part of the Vite build rather than a separate script.
+ * Runs via `bun` subprocess since the script uses Bun APIs.
+ */
+export function bundleRemoteDaemonPlugin(): Plugin {
+	return {
+		name: "bundle-remote-daemon",
+		async writeBundle() {
+			const { execSync } = await import("node:child_process");
+			try {
+				execSync("bun run scripts/package-remote-daemon.ts", {
+					cwd: resolve(__dirname, ".."),
+					stdio: "inherit",
+				});
+			} catch (err) {
+				console.warn("[bundle-remote-daemon] Skipped:", err);
+			}
+		},
+	};
+}
+
+/**
  * Injects environment variables into index.html CSP.
  */
 export function htmlEnvTransformPlugin(): Plugin {

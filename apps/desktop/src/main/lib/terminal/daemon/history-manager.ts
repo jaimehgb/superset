@@ -30,6 +30,20 @@ export class HistoryManager {
 		rows: number;
 		initialScrollback?: string;
 	}): Promise<void> {
+		// Close any existing writer for this pane (e.g. on reconnect after SSH
+		// disconnect) to avoid leaking file handles. Must await to prevent the
+		// old close() from writing endedAt after the new init() writes meta.json.
+		const existing = this.historyWriters.get(paneId);
+		if (existing) {
+			await existing.close().catch((error) => {
+				console.warn(
+					`[HistoryManager] Failed to close previous history writer for ${paneId}:`,
+					error,
+				);
+			});
+			this.historyWriters.delete(paneId);
+		}
+
 		this.historyInitializing.add(paneId);
 		this.pendingHistoryData.set(paneId, []);
 

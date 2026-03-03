@@ -440,6 +440,16 @@ export const createConfigRouter = () => {
 					throw new Error("Project not found");
 				}
 
+				// Remote projects: cannot detect local setup defaults
+				if (project.remoteMachineId) {
+					return {
+						projectSummary: "",
+						actions: [],
+						setupTemplate: [],
+						signals: {},
+					} satisfies SetupDetectionResult;
+				}
+
 				return await detectSetupDefaults(project.mainRepoPath);
 			}),
 

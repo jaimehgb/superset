@@ -17,9 +17,11 @@ import {
 	gitUnstageFiles,
 	secureFs,
 } from "./security";
+import { isRemoteWorktree } from "./utils/is-remote-worktree";
 import { parseGitStatus } from "./utils/parse-status";
 
 async function getUntrackedFilePaths(worktreePath: string): Promise<string[]> {
+	if (isRemoteWorktree(worktreePath)) return [];
 	assertRegisteredWorktree(worktreePath);
 	const git = simpleGit(worktreePath);
 	const status = await git.status();
@@ -27,6 +29,7 @@ async function getUntrackedFilePaths(worktreePath: string): Promise<string[]> {
 }
 
 async function getStagedNewFilePaths(worktreePath: string): Promise<string[]> {
+	if (isRemoteWorktree(worktreePath)) return [];
 	assertRegisteredWorktree(worktreePath);
 	const git = simpleGit(worktreePath);
 	const status = await git.status();

@@ -162,3 +162,11 @@ export type BranchPrefixMode = (typeof BRANCH_PREFIX_MODES)[number];
 export const FILE_OPEN_MODES = ["split-pane", "new-tab"] as const;
 
 export type FileOpenMode = (typeof FILE_OPEN_MODES)[number];
+
+export const REMOTE_MACHINE_STATUSES = [
+	"connected",
+	"disconnected",
+	"unknown",
+] as const;
+
+export type RemoteMachineStatus = (typeof REMOTE_MACHINE_STATUSES)[number];

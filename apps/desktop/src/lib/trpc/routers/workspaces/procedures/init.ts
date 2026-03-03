@@ -1,12 +1,14 @@
 import { workspaces, worktrees } from "@superset/local-db";
 import { observable } from "@trpc/server/observable";
 import { eq } from "drizzle-orm";
+import { resolveGitOps } from "main/lib/git";
 import { localDb } from "main/lib/local-db";
 import { workspaceInitManager } from "main/lib/workspace-init-manager";
 import type { WorkspaceInitProgress } from "shared/types/workspace-init";
 import { deduplicateBranchName } from "shared/utils/branch";
 import { z } from "zod";
 import { publicProcedure, router } from "../../..";
+import { getActiveConnection } from "../../remote-machines";
 import { getPresetsForTrigger } from "../../settings";
 import { getProject, getWorkspaceWithRelations } from "../utils/db-helpers";
 import { listBranches } from "../utils/git";
@@ -87,7 +89,20 @@ async function resolveRetryTarget({
 		return { branch: currentBranch, worktreePath: currentPath };
 	}
 
-	const { local, remote } = await listBranches(project.mainRepoPath);
+	const sshConn = project.remoteMachineId
+		? getActiveConnection(project.remoteMachineId)
+		: undefined;
+	if (project.remoteMachineId && !sshConn) {
+		throw new Error(
+			"Remote machine is not connected. Please connect to the machine and try again.",
+		);
+	}
+	const gitOps = resolveGitOps(sshConn);
+	const { local, remote } = await listBranches(
+		project.mainRepoPath,
+		undefined,
+		gitOps,
+	);
 	const deduplicatedBranch = deduplicateBranchName(currentBranch, [
 		...local,
 		...remote,

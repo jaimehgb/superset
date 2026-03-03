@@ -48,6 +48,7 @@ export function WorkspaceSidebar({
 						mainRepoPath={group.project.mainRepoPath}
 						hideImage={group.project.hideImage}
 						iconUrl={group.project.iconUrl}
+						remoteMachineId={group.project.remoteMachineId}
 						workspaces={group.workspaces}
 						shortcutBaseIndex={projectShortcutIndices[index]}
 						index={index}

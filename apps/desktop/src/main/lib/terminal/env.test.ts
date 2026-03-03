@@ -706,6 +706,32 @@ describe("env", () => {
 			});
 		});
 
+		describe("remoteHookPort override", () => {
+			it("should use remoteHookPort as SUPERSET_PORT when provided", () => {
+				const result = buildTerminalEnv({
+					...baseParams,
+					remoteHookPort: 18787,
+				});
+				expect(result.SUPERSET_PORT).toBe("18787");
+			});
+
+			it("should use default DESKTOP_NOTIFICATIONS_PORT when remoteHookPort is not provided", () => {
+				const result = buildTerminalEnv(baseParams);
+				// When remoteHookPort is omitted, SUPERSET_PORT should use the default notifications port
+				expect(result.SUPERSET_PORT).toBeDefined();
+				expect(result.SUPERSET_PORT).not.toBe("18787");
+			});
+
+			it("should convert remoteHookPort number to string", () => {
+				const result = buildTerminalEnv({
+					...baseParams,
+					remoteHookPort: 9999,
+				});
+				expect(result.SUPERSET_PORT).toBe("9999");
+				expect(typeof result.SUPERSET_PORT).toBe("string");
+			});
+		});
+
 		describe("COLORFGBG for light mode detection", () => {
 			it("should set COLORFGBG to dark mode by default", () => {
 				const result = buildTerminalEnv(baseParams);

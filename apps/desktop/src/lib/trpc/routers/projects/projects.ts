@@ -5,6 +5,7 @@ import {
 	BRANCH_PREFIX_MODES,
 	EXTERNAL_APPS,
 	projects,
+	remoteMachines,
 	type SelectProject,
 	settings,
 	workspaces,
@@ -14,17 +15,23 @@ import { and, desc, eq, inArray, isNull, not } from "drizzle-orm";
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 import { track } from "main/lib/analytics";
+import { resolveGitOps } from "main/lib/git";
+import { RemoteGitOperations } from "main/lib/git/remote";
 import { localDb } from "main/lib/local-db";
 import {
 	deleteProjectIcon,
 	saveProjectIconFromDataUrl,
 } from "main/lib/project-icons";
-import { getWorkspaceRuntimeRegistry } from "main/lib/workspace-runtime";
+import {
+	getWorkspaceRuntimeRegistry,
+	RemoteRuntimeNotConnectedError,
+} from "main/lib/workspace-runtime";
 import { PROJECT_COLOR_VALUES } from "shared/constants/project-colors";
 import simpleGit from "simple-git";
 import { z } from "zod";
 import { publicProcedure, router } from "../..";
 import { resolveDefaultEditor } from "../external";
+import { getActiveConnection } from "../remote-machines";
 import {
 	activateProject,
 	getBranchWorkspace,
@@ -36,6 +43,8 @@ import {
 	getDefaultBranch,
 	getGitAuthorName,
 	getGitRoot,
+	hasOriginRemote,
+	listBranches,
 	NotGitRepoError,
 	refreshDefaultBranch,
 	sanitizeAuthorPrefix,
@@ -137,7 +146,19 @@ async function ensureMainWorkspace(project: Project): Promise<void> {
 		return;
 	}
 
-	const branch = await getCurrentBranch(project.mainRepoPath);
+	// Use the GitOperations interface to support both local and remote projects
+	let sshConn: ReturnType<typeof getActiveConnection> | undefined;
+	if (project.remoteMachineId) {
+		sshConn = getActiveConnection(project.remoteMachineId);
+		if (!sshConn) {
+			console.warn(
+				`[ensureMainWorkspace] Remote machine ${project.remoteMachineId} not connected, skipping workspace creation`,
+			);
+			return;
+		}
+	}
+	const gitOps = resolveGitOps(sshConn);
+	const branch = await gitOps.getCurrentBranch(project.mainRepoPath);
 	if (!branch) {
 		console.warn(
 			`[ensureMainWorkspace] Could not determine current branch for project ${project.id}`,
@@ -336,28 +357,33 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						throw new Error(`Project ${input.projectId} not found`);
 					}
 
-					const git = simpleGit(project.mainRepoPath);
-
-					let hasOrigin = false;
-					try {
-						const remotes = await git.getRemotes();
-						hasOrigin = remotes.some((r) => r.name === "origin");
-					} catch {}
-
-					const branchSummary = await git.branch(["-a"]);
-
-					const localBranchSet = new Set<string>();
-					const remoteBranchSet = new Set<string>();
-
-					for (const name of Object.keys(branchSummary.branches)) {
-						if (name.startsWith("remotes/origin/")) {
-							if (name === "remotes/origin/HEAD") continue;
-							const remoteName = name.replace("remotes/origin/", "");
-							remoteBranchSet.add(remoteName);
-						} else {
-							localBranchSet.add(name);
-						}
+					// Remote projects: return minimal branch info from DB
+					if (project.remoteMachineId) {
+						return {
+							branches: [
+								{
+									name: project.defaultBranch ?? "main",
+									lastCommitDate: Date.now(),
+									isLocal: true,
+									isRemote: true,
+								},
+							],
+							defaultBranch: project.defaultBranch ?? "main",
+						};
 					}
+
+					const gitOps = resolveGitOps();
+
+					const hasOrigin = await hasOriginRemote(project.mainRepoPath, gitOps);
+
+					const { local, remote } = await listBranches(
+						project.mainRepoPath,
+						undefined,
+						gitOps,
+					);
+
+					const localBranchSet = new Set(local);
+					const remoteBranchSet = new Set(remote);
 
 					const branchMap = new Map<
 						string,
@@ -366,7 +392,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 
 					if (hasOrigin) {
 						try {
-							const remoteBranchInfo = await git.raw([
+							const remoteBranchInfo = await gitOps.raw(project.mainRepoPath, [
 								"for-each-ref",
 								"--sort=-committerdate",
 								"--format=%(refname:short) %(committerdate:unix)",
@@ -407,7 +433,7 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					}
 
 					try {
-						const localBranchInfo = await git.raw([
+						const localBranchInfo = await gitOps.raw(project.mainRepoPath, [
 							"for-each-ref",
 							"--sort=-committerdate",
 							"--format=%(refname:short) %(committerdate:unix)",
@@ -463,12 +489,13 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					// Sync with remote in case the default branch changed (e.g. master -> main)
 					const remoteDefaultBranch = await refreshDefaultBranch(
 						project.mainRepoPath,
+						gitOps,
 					);
 
 					const defaultBranch =
 						remoteDefaultBranch ||
 						project.defaultBranch ||
-						(await getDefaultBranch(project.mainRepoPath));
+						(await getDefaultBranch(project.mainRepoPath, gitOps));
 
 					if (defaultBranch !== project.defaultBranch) {
 						localDb
@@ -635,10 +662,131 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						.trim()
 						.optional()
 						.transform((v) => (v && v.length > 0 ? v : undefined)),
+					// When provided, clone onto the remote machine instead of locally
+					remoteMachineId: z.string().optional(),
 				}),
 			)
 			.mutation(async ({ input }) => {
 				try {
+					const repoName = extractRepoName(input.url);
+					if (!repoName) {
+						return {
+							canceled: false as const,
+							success: false as const,
+							error: "Invalid repository URL",
+						};
+					}
+
+					// ── Remote clone branch ──────────────────────────────────
+					if (input.remoteMachineId) {
+						const machine = localDb
+							.select()
+							.from(remoteMachines)
+							.where(eq(remoteMachines.id, input.remoteMachineId))
+							.get();
+
+						if (!machine) {
+							return {
+								canceled: false as const,
+								success: false as const,
+								error: `Remote machine ${input.remoteMachineId} not found`,
+							};
+						}
+
+						const ssh = getActiveConnection(input.remoteMachineId);
+						if (!ssh) {
+							return {
+								canceled: false as const,
+								success: false as const,
+								error: `Remote machine "${machine.name}" is not connected. Please connect first.`,
+							};
+						}
+
+						// Resolve ~ to absolute path (shell-escaped paths suppress tilde expansion)
+						let resolvedProjectsDir = machine.projectsDir;
+						if (
+							resolvedProjectsDir.startsWith("~/") ||
+							resolvedProjectsDir === "~"
+						) {
+							const remoteHome = (await ssh.exec("echo $HOME")).stdout.trim();
+							resolvedProjectsDir = resolvedProjectsDir.replace(
+								/^~/,
+								remoteHome,
+							);
+						}
+						const remoteClonePath = `${resolvedProjectsDir}/${repoName}`;
+
+						// Check if we already have a project record for this remote path
+						const existingProject = localDb
+							.select()
+							.from(projects)
+							.where(eq(projects.mainRepoPath, remoteClonePath))
+							.get();
+
+						if (existingProject) {
+							localDb
+								.update(projects)
+								.set({ lastOpenedAt: Date.now() })
+								.where(eq(projects.id, existingProject.id))
+								.run();
+
+							await ensureMainWorkspace({
+								...existingProject,
+								lastOpenedAt: Date.now(),
+							});
+
+							track("project_opened", {
+								project_id: existingProject.id,
+								method: "clone",
+							});
+
+							return {
+								canceled: false as const,
+								success: true as const,
+								project: {
+									...existingProject,
+									lastOpenedAt: Date.now(),
+								},
+							};
+						}
+
+						// Ensure the projects directory exists on the remote
+						await ssh.exec(`mkdir -p ${resolvedProjectsDir}`);
+
+						// Clone on the remote machine via SSH
+						const remoteGit = new RemoteGitOperations(ssh);
+						await remoteGit.clone(input.url, remoteClonePath);
+
+						const defaultBranch =
+							await remoteGit.getDefaultBranch(remoteClonePath);
+
+						const project = localDb
+							.insert(projects)
+							.values({
+								mainRepoPath: remoteClonePath,
+								name: repoName,
+								color: getDefaultProjectColor(),
+								defaultBranch,
+								remoteMachineId: input.remoteMachineId,
+							})
+							.returning()
+							.get();
+
+						await ensureMainWorkspace(project);
+
+						track("project_opened", {
+							project_id: project.id,
+							method: "clone",
+						});
+
+						return {
+							canceled: false as const,
+							success: true as const,
+							project,
+						};
+					}
+
+					// ── Local clone branch (existing behavior) ───────────────
 					let targetDir = input.targetDirectory;
 
 					if (!targetDir) {
@@ -661,15 +809,6 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						}
 
 						targetDir = result.filePaths[0];
-					}
-
-					const repoName = extractRepoName(input.url);
-					if (!repoName) {
-						return {
-							canceled: false as const,
-							success: false as const,
-							error: "Invalid repository URL",
-						};
 					}
 
 					const clonePath = join(targetDir, repoName);
@@ -948,6 +1087,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					throw new Error(`Project ${input.id} not found`);
 				}
 
+				// Remote projects: no local git repo to refresh
+				if (project.remoteMachineId) {
+					return {
+						success: true,
+						defaultBranch: project.defaultBranch ?? "main",
+						changed: false,
+					};
+				}
+
 				const remoteDefaultBranch = await refreshDefaultBranch(
 					project.mainRepoPath,
 				);
@@ -1005,9 +1153,15 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 				let totalFailed = 0;
 				const registry = getWorkspaceRuntimeRegistry();
 				for (const workspace of projectWorkspaces) {
-					const terminal = registry.getForWorkspaceId(workspace.id).terminal;
-					const terminalResult = await terminal.killByWorkspaceId(workspace.id);
-					totalFailed += terminalResult.failed;
+					try {
+						const terminal = registry.getForWorkspaceId(workspace.id).terminal;
+						const terminalResult = await terminal.killByWorkspaceId(
+							workspace.id,
+						);
+						totalFailed += terminalResult.failed;
+					} catch (err) {
+						if (!(err instanceof RemoteRuntimeNotConnectedError)) throw err;
+					}
 				}
 
 				const closedWorkspaceIds = projectWorkspaces.map((w) => w.id);
@@ -1082,6 +1236,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					return null;
 				}
 
+				// Remote projects: no local git repo to run `gh` against
+				if (project.remoteMachineId) {
+					return null;
+				}
+
 				if (project.githubOwner) {
 					console.log(
 						"[getGitHubAvatar] Using cached owner:",
@@ -1131,6 +1290,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 					return null;
 				}
 
+				// Remote projects: no local git repo to read config from
+				if (project.remoteMachineId) {
+					return null;
+				}
+
 				const authorName = await getGitAuthorName(project.mainRepoPath);
 				if (!authorName) {
 					return null;
@@ -1156,6 +1320,11 @@ export const createProjectsRouter = (getWindow: () => BrowserWindow | null) => {
 						code: "NOT_FOUND",
 						message: `Project ${input.id} not found`,
 					});
+				}
+
+				// Remote projects: no local repo to scan for icons
+				if (project.remoteMachineId) {
+					return { iconUrl: project.iconUrl ?? null };
 				}
 
 				// Skip if the project already has an icon

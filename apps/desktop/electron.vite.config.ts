@@ -11,6 +11,7 @@ import tsconfigPathsPlugin from "vite-tsconfig-paths";
 
 import { resources, version } from "./package.json";
 import {
+	bundleRemoteDaemonPlugin,
 	copyResourcesPlugin,
 	defineEnv,
 	devPath,
@@ -41,7 +42,7 @@ const sentryPlugin = process.env.SENTRY_AUTH_TOKEN
 
 export default defineConfig({
 	main: {
-		plugins: [tsconfigPaths, copyResourcesPlugin()],
+		plugins: [tsconfigPaths, copyResourcesPlugin(), bundleRemoteDaemonPlugin()],
 
 		define: {
 			"process.env.NODE_ENV": defineEnv(process.env.NODE_ENV, "production"),
@@ -109,6 +110,8 @@ export default defineConfig({
 					"pg-native",
 					"@ast-grep/napi",
 					"libsql",
+					"ssh2",
+					"cpu-features",
 				],
 				plugins: [sentryPlugin].filter(Boolean),
 			},
@@ -157,18 +160,24 @@ export default defineConfig({
 				"",
 			),
 			"process.platform": defineEnv(process.platform),
-			"process.env.NEXT_PUBLIC_API_URL": defineEnv(
-				process.env.NEXT_PUBLIC_API_URL,
-				"https://api.superset.sh",
-			),
+			"process.env.NEXT_PUBLIC_API_URL":
+				process.env.NODE_ENV === "development"
+					? defineEnv("")
+					: defineEnv(
+							process.env.NEXT_PUBLIC_API_URL,
+							"https://api.superset.sh",
+						),
 			"process.env.NEXT_PUBLIC_WEB_URL": defineEnv(
 				process.env.NEXT_PUBLIC_WEB_URL,
 				"https://app.superset.sh",
 			),
-			"process.env.NEXT_PUBLIC_ELECTRIC_URL": defineEnv(
-				process.env.NEXT_PUBLIC_ELECTRIC_URL,
-				"https://api.superset.sh/api/electric",
-			),
+			"process.env.NEXT_PUBLIC_ELECTRIC_URL":
+				process.env.NODE_ENV === "development"
+					? defineEnv("/api/electric")
+					: defineEnv(
+							process.env.NEXT_PUBLIC_ELECTRIC_URL,
+							"https://api.superset.sh/api/electric",
+						),
 			"process.env.NEXT_PUBLIC_DOCS_URL": defineEnv(
 				process.env.NEXT_PUBLIC_DOCS_URL,
 				"https://docs.superset.sh",
@@ -200,6 +209,13 @@ export default defineConfig({
 		server: {
 			port: DEV_SERVER_PORT,
 			strictPort: false,
+			proxy: {
+				"/api": {
+					target: process.env.NEXT_PUBLIC_API_URL ?? "https://api.superset.sh",
+					changeOrigin: true,
+					secure: true,
+				},
+			},
 		},
 
 		plugins: [

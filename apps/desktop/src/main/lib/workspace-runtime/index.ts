@@ -13,12 +13,14 @@
  * ```
  */
 
+export { RemoteRuntimeNotConnectedError } from "./errors";
 export { LocalWorkspaceRuntime } from "./local";
 export {
 	getWorkspaceRuntimeRegistry,
 	resetWorkspaceRuntimeRegistry,
 } from "./registry";
 export type {
+	ProjectMachineLookup,
 	TerminalCapabilities,
 	TerminalEventSource,
 	TerminalManagement,
